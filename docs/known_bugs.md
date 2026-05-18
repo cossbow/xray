@@ -20,6 +20,18 @@
   bash scripts/check_comment_rules.sh
   ```
 
+### 2026-05-18 — xr_tref_tuple: empty tuple 断言失败 (4 ctest)
+
+- **现象**：`test_fmt_roundtrip`、`test_vm_exception`、`test_xi_lower`、`test_xi_opt` 四个 ctest 运行时触发 `[FATAL] xtype_ref.c:163: Check failed: xr_tref_tuple: empty tuple`，进程 abort。
+- **root cause**：`xr_tref_tuple()` 在 `xtype_ref.c:163` 断言 tuple 元素数 > 0，但某处构造了空 tuple type ref。具体调用者未排查。
+- **影响**：112/116 ctest 通过；这 4 个失败在 `refactor/unified-class` 分支创建前已存在，与本次改动无关。
+- **复现方法**：
+  ```bash
+  cd build && ctest -R "test_fmt_roundtrip|test_vm_exception|test_xi_lower|test_xi_opt" --output-on-failure
+  ```
+
+---
+
 ## 历史已修复
 
 ### 2026-05-14 — 编译错误测试集 readonly/strict-field/index 失败项  ✅ 已修复
