@@ -1,0 +1,414 @@
+# 010 — 跨平台抽象重构（Platform Layer Refactor）
+
+> **状态**：已立项，待实施
+> **决策原则**：不考虑向后兼容；选最佳设计；一次到位
+> **完成判据**：见末尾"验收清单"
+
+---
+
+## 一、动机
+
+Stage 9 Windows port 暴露出当前跨平台抽象的根本问题：
+
+| 项 | 现状 | 影响 |
+|---|---:|---|
+| 两套并存的平台检测宏 | `XR_PLATFORM_*` + `XR_OS_*` | 新人不知用哪个；会用错 |
+| 直接 POSIX 头引用 | **146 处**（散在 45 个文件） | 加新平台要逐处改 |
+| 散落 `_WIN32` / `__APPLE__` / `__linux__` ifdef | **73 处**（28 个文件） | ifdef 增长 = 维护成本指数 |
+| `_unix.c` / `_win.c` 都被 GLOB 编译 | 6 对 | 浪费编译时间；漏 ifdef 静默通过 |
+| 公共 header 拉系统头 | `include/xray_platform.h` 含 winsock2/windows/bcrypt/epoll/kqueue | embedder 工程被污染（`TokenType` 与 winnt.h 冲突即此根因） |
+| capability detection | 无 | 用 `__linux__` 推 epoll，存在但禁用 io_uring 也只能改源 |
+| 加平台 checklist | 无 | 加 FreeBSD/RISC-V 没有指引 |
+
+**这次重构后**：加 OS 等于在 `src/os/<newos>/` 下加 N 个 `.c`，正文（vm/jit/runtime/coro/frontend/module/stdlib/app）一行不动。
+
+---
+
+## 二、目标架构
+
+### 2.1 文件布局
+
+```
+include/                          公共 API（零系统头，零反向依赖）
+├─ xray.h                         唯一入口
+├─ xray_export.h                  XRAY_API 可见性
+├─ xray_version.h                 (auto)
+├─ xray_isolate.h                 Isolate handle
+├─ xray_embedding.h               Embedder API
+└─ xray_module_sdk.h              ⚠ 当前反向依赖 src/，需后续单独整治
+
+src/
+├─ base/
+│  ├─ xplatform.h                 唯一平台检测：XR_OS_* / XR_ARCH_* / XR_COMPILER_*
+│  ├─ xconfig.h.in                cmake configure_file 模板（XRAY_HAVE_*）
+│  ├─ xdefs.h                     XR_FUNC / XR_DATA / XR_API_INTERNAL
+│  └─ ...（base 其余非 OS 抽象的工具）
+│
+├─ os/                            ★ 全部跨平台抽象集中在这里 ★
+│  ├─ os.h                        umbrella，include 所有 os_*.h
+│  ├─ os_thread.h                 线程/锁/condvar/once/yield/sleep
+│  ├─ os_time.h                   monotonic / realtime / sleep_ns
+│  ├─ os_fs.h                     文件/目录/fd/dlopen
+│  ├─ os_mem.h                    aligned_alloc / mmap / mprotect
+│  ├─ os_net.h                    socket / shutdown / iovec / recv / send
+│  ├─ os_poll.h                   I/O 多路复用接口（后端透明）
+│  ├─ os_random.h                 CSPRNG
+│  └─ os_atomic.h                 C11 atomic 宏 + CPU pause
+│
+│  ├─ unix/                       POSIX 实现（macOS + Linux + BSD 共享）
+│  │  ├─ thread_unix.c
+│  │  ├─ time_unix.c
+│  │  ├─ fs_unix.c
+│  │  ├─ mem_unix.c
+│  │  ├─ net_unix.c
+│  │  ├─ poll_epoll.c             #if XRAY_HAVE_EPOLL
+│  │  ├─ poll_kqueue.c            #if XRAY_HAVE_KQUEUE
+│  │  ├─ poll_iouring.c           #if XRAY_HAVE_IO_URING（opt-in）
+│  │  ├─ random_unix.c
+│  │  └─ atomic_unix.c
+│  │
+│  └─ win/                        Windows 实现
+│     ├─ thread_win.c
+│     ├─ time_win.c
+│     ├─ fs_win.c
+│     ├─ mem_win.c
+│     ├─ net_win.c
+│     ├─ poll_iocp.c
+│     ├─ random_win.c
+│     └─ atomic_win.c
+│
+└─ ...（其余 runtime/coro/jit/vm 不再有任何 OS 名 ifdef）
+```
+
+### 2.2 分层契约
+
+```
+┌──────────────────────────────────────────────────┐
+│  L8  app / stdlib                                │
+│  L7  api                                         │  ← 仅依赖 include/xray*.h
+│  L6  aot                                         │
+│  L5  vm / jit                                    │  ← 通过 src/os/os.h 用所有平台 API
+│  L4  module / frontend                           │
+│  L3  runtime/class | symbol | coro               │
+│  L2  runtime/gc | object | value                 │
+│  L1  src/os/                                     │  ★ 平台抽象层 ★
+│  L0  src/base/ (xplatform.h + xconfig.h + xdefs) │  ★ 平台检测层 ★
+└──────────────────────────────────────────────────┘
+```
+
+**严格单向依赖**：L0 → L1 → L2 → ... → L8。L1 之上不准 include 任何系统头。
+
+### 2.3 三条铁律（lint 强制）
+
+1. **R1：`include/*.h` 禁止 include 任何系统头**
+   - 例外：`<stdint.h>`、`<stddef.h>`、`<stdbool.h>` 三个 freestanding header
+   - 公共 API 必须对 embedder 完全无副作用
+
+2. **R2：`src/{coro,vm,jit,runtime,frontend,module,api,aot,app}/` 与 `stdlib/` 禁止 include 任何 OS 头**
+   - 黑名单：`<unistd.h>`、`<sys/*>`、`<pthread.h>`、`<windows.h>`、`<sched.h>`、`<dirent.h>`、`<dlfcn.h>`、`<fcntl.h>`、`<poll.h>`、`<netinet/*>`、`<arpa/*>`、`<netdb.h>`、`<winsock2.h>`、`<ws2tcpip.h>`、`<bcrypt.h>`、`<io.h>`、`<process.h>`
+   - 唯一允许使用上述头的目录：`src/os/`、`src/base/xplatform.h`、`src/base/xconfig.h.in`
+
+3. **R3：上述目录禁止使用 `_WIN32` / `_WIN64` / `__APPLE__` / `__linux__` / `__FreeBSD__` / `_MSC_VER` / `__GNUC__` / `__clang__` ifdef**
+   - 唯一允许使用这些原始宏的位置：`src/base/xplatform.h`（用于定义 `XR_OS_*` / `XR_COMPILER_*`）
+   - 上层只能用 `XR_OS_WINDOWS` / `XRAY_HAVE_*` 等抽象后的宏
+
+### 2.4 命名规范
+
+| 概念 | 形式 | 例 |
+|---|---|---|
+| 公共 API 函数 | `xray_*` | `xray_isolate_new` |
+| 内部跨模块函数 | `xr_<module>_*` | `xr_os_thread_yield` / `xr_vm_run` |
+| OS 抽象函数 | `xr_os_<subsystem>_*` | `xr_os_time_monotonic_ns` |
+| 平台检测宏 | `XR_OS_*` `XR_ARCH_*` `XR_COMPILER_*` | `XR_OS_WINDOWS` |
+| 能力检测宏 | `XRAY_HAVE_*` | `XRAY_HAVE_EPOLL` |
+| 可见性宏 | `XRAY_API`（公共）/ `XR_FUNC`（内部）/ `XR_DATA`（数据） | — |
+
+> **过渡期约定**：现有 `xr_thread_*` / `xr_time_*` / `xr_socket_*` 等无 `_os_` 前缀的 API **保留原名**，避免一次性大改造。新增的全部用 `xr_os_*`。最后一个 PR 再统一收敛。
+
+### 2.5 capability detection（CMake 生成）
+
+`src/base/xconfig.h.in` 模板：
+
+```c
+// auto-generated by cmake — do not edit
+#ifndef XRAY_CONFIG_H
+#define XRAY_CONFIG_H
+
+#cmakedefine01 XRAY_HAVE_EPOLL
+#cmakedefine01 XRAY_HAVE_KQUEUE
+#cmakedefine01 XRAY_HAVE_IO_URING
+#cmakedefine01 XRAY_HAVE_GETRANDOM
+#cmakedefine01 XRAY_HAVE_ARC4RANDOM
+#cmakedefine01 XRAY_HAVE_BCRYPT
+#cmakedefine01 XRAY_HAVE_PTHREAD_SETNAME_NP
+#cmakedefine01 XRAY_HAVE_NANOSLEEP
+#cmakedefine01 XRAY_HAVE_CLOCK_GETTIME
+#cmakedefine01 XRAY_HAVE_POSIX_MEMALIGN
+#cmakedefine01 XRAY_HAVE_ALIGNED_ALLOC
+#cmakedefine01 XRAY_HAVE_MMAP
+
+#endif
+```
+
+CMake 端：
+
+```cmake
+include(CheckIncludeFile)
+include(CheckSymbolExists)
+include(CheckFunctionExists)
+
+check_include_file("sys/epoll.h"      XRAY_HAVE_EPOLL)
+check_symbol_exists(kqueue            "sys/event.h" XRAY_HAVE_KQUEUE)
+check_symbol_exists(io_uring_setup    "linux/io_uring.h" XRAY_HAVE_IO_URING)
+check_symbol_exists(getrandom         "sys/random.h" XRAY_HAVE_GETRANDOM)
+check_symbol_exists(arc4random_buf    "stdlib.h" XRAY_HAVE_ARC4RANDOM)
+# Windows: BCryptGenRandom 必有，无需 check
+if(WIN32)
+    set(XRAY_HAVE_BCRYPT 1)
+endif()
+
+configure_file(
+    ${CMAKE_SOURCE_DIR}/src/base/xconfig.h.in
+    ${CMAKE_BINARY_DIR}/generated/xray/xconfig.h
+)
+```
+
+源码：
+
+```c
+#include "base/xconfig.h"
+...
+#if XRAY_HAVE_EPOLL
+    return poll_epoll_init(...);
+#elif XRAY_HAVE_KQUEUE
+    return poll_kqueue_init(...);
+#elif XR_OS_WINDOWS
+    return poll_iocp_init(...);
+#endif
+```
+
+注意：`#if XRAY_HAVE_*` 用 0/1 而不是 ifdef，方便强制禁用（`cmake -DXRAY_HAVE_IO_URING=0`）。
+
+---
+
+## 三、实施步骤（6 个独立 PR）
+
+每个 PR 的硬约束：
+- macOS / Linux 本地 ctest **87/87 通过**
+- 不引入新的 ifdef
+- commit message 自包含、不引用本文档（按用户规则）
+- 单 PR 改动 ≤ 1500 行（除 PR2 文件移动 + PR4 ifdef 清理外）
+
+### PR1 — 统一平台检测宏（机械重命名）
+
+**目标**：`XR_PLATFORM_*` 全部改为 `XR_OS_*`，删除 `include/xray_platform.h` 顶部的重复定义。
+
+**改动**：
+- `include/xray_platform.h` 顶部 8 行（删 `XR_PLATFORM_*` 定义）改为 `#include "../src/base/xplatform.h"`
+   - ⚠ 但 `include/` 不应反向引用 `src/`！所以正确做法：把 `XR_OS_*` / `XR_ARCH_*` / `XR_COMPILER_*` 这几个**只是宏定义、零依赖**的内容**搬到 `include/xray_platform.h` 顶部**或者直接放在一个新的 `include/xray_internal.h`。
+   - 选 **A**：把 `XR_OS_*` 等搬到 `src/base/xplatform.h`，让 `include/xray_platform.h` 不再做平台检测，仅保留 socket/random/strncasecmp 这些抽象（它们后面会被 PR3 拆掉）
+- 全局重命名 `XR_PLATFORM_WINDOWS` → `XR_OS_WINDOWS` 等（perl 单行）
+- 验证：`grep -rn "XR_PLATFORM_" src include stdlib` 应为 0
+
+**估时**：30 分钟。**风险**：极低。
+
+### PR2 — 建 src/os/ 目录骨架，搬 thread/time/fs/dylib
+
+**目标**：把 `xthread*` / `xtime*` / `xfd*` / `xdir*` / `xdylib*` 从 `src/base/` 搬到 `src/os/`，重命名为 `os_*.h` + `unix/<sub>_unix.c` + `win/<sub>_win.c`。
+
+**文件移动**（git mv 保留 history）：
+
+| 原 | 新 |
+|---|---|
+| `src/base/xthread.h` | `src/os/os_thread.h` |
+| `src/base/xthread_unix.c` | `src/os/unix/thread_unix.c` |
+| `src/base/xthread_win.c` | `src/os/win/thread_win.c` |
+| `src/base/xtime.h` | `src/os/os_time.h` |
+| `src/base/xtime_unix.c` | `src/os/unix/time_unix.c` |
+| `src/base/xtime_win.c` | `src/os/win/time_win.c` |
+| `src/base/xfd.h` | 合并入 `src/os/os_fs.h` |
+| `src/base/xfd_unix.c` | 合并入 `src/os/unix/fs_unix.c` |
+| `src/base/xfd_win.c` | 合并入 `src/os/win/fs_win.c` |
+| `src/base/xdir.h` | 合并入 `src/os/os_fs.h` |
+| `src/base/xdir_unix.c` | 合并入 `src/os/unix/fs_unix.c` |
+| `src/base/xdir_win.c` | 合并入 `src/os/win/fs_win.c` |
+| `src/base/xdylib.h` | 合并入 `src/os/os_fs.h` |
+| `src/base/xdylib_unix.c` | 合并入 `src/os/unix/fs_unix.c` |
+| `src/base/xdylib_win.c` | 合并入 `src/os/win/fs_win.c` |
+| `src/base/xmem_*.c` | 搬到 `src/os/{unix,win}/mem_*.c`（h 在 base 保留） |
+
+**CMake 改动**：
+```cmake
+file(GLOB BASE_SRC "src/base/*.c")
+# 新增：
+if(WIN32)
+    file(GLOB OS_SRC "src/os/win/*.c")
+else()
+    file(GLOB OS_SRC "src/os/unix/*.c")
+endif()
+list(APPEND xray_core_sources ${OS_SRC})
+```
+
+**正文 include 全局替换**（perl 单行 + sed）：
+- `#include "../base/xthread.h"` → `#include "../os/os_thread.h"`
+- `#include "../base/xtime.h"` → `#include "../os/os_time.h"`
+- `#include "xthread.h"` → `#include "../os/os_thread.h"`（同目录的内部互引）
+- 等等
+
+**估时**：2-3 小时（机械搬迁 + 替换 + 调试 include 路径）。**风险**：低（只改路径，不改逻辑）。
+
+### PR3 — 拆 include/xray_platform.h（彻底解毒公共路径）
+
+**目标**：让 `include/xray_platform.h` 仅保留对外暴露的极少必需内容（理想情况：直接删除）。socket/iovec/random/strncasecmp 等 inline 拆到 `src/os/os_net.h` 与 `src/os/os_random.h`。
+
+**步骤**：
+1. 新建 `src/os/os_net.h`：socket 类型、`xr_socket_recv`、`xr_socket_send`、`XR_SHUT_*`、`xr_socket_set_*`、`writev` 等
+2. 新建 `src/os/os_random.h` + `src/os/{unix,win}/random_*.c`：`xr_random_bytes` 真函数
+3. 新建 `src/os/unix/net_unix.c` + `src/os/win/net_win.c`：winsock 初始化、平台特定的非 inline 实现
+4. 把 `xr_strncasecmp` 等放到 `src/base/xstring_compat.h`（它属于 libc 兼容，不算 OS 抽象）
+5. 全局替换 21 处 `#include <xray_platform.h>` 为正确的 `#include "os/os_net.h"` 等
+6. 删除 `include/xray_platform.h`（或保留为空 + deprecation 注释）
+
+**估时**：3-4 小时。**风险**：中（涉及 stdlib/* 多个 TU）。
+
+### PR4 — CMake 互斥编译，清 #ifdef body guard
+
+**目标**：让 PR2 已经移到 `src/os/{unix,win}/` 下的源文件**移除文件级 `#ifndef _WIN32` / `#ifdef _WIN32` 的 body guard**，改由 CMake 选目录。同时清理散落在 `src/coro/`、`src/jit/` 等正文目录的平台 ifdef。
+
+**改动**：
+- `src/os/unix/*.c` 删除每文件顶部的 `#ifndef _WIN32` / 末尾的 `#endif`
+- `src/os/win/*.c` 同理
+- 正文中的 `#ifdef _WIN32 ... #else ... #endif` 替换为 `os_*.h` 的统一 API 调用
+   - 例：`xworker.c` 里的 `sysconf(_SC_NPROCESSORS_ONLN) / GetSystemInfo` 分支 → `xr_os_cpu_count()`
+
+**估时**：3-4 小时。**风险**：中（要全平台 CI 验证）。
+
+### PR5 — 引入 xconfig.h capability detection
+
+**目标**：把所有 `#if defined(__linux__)` / `#if defined(__APPLE__)` 这种 OS 名条件，**只要语义是"有这个能力"**，就改为 `XRAY_HAVE_*`。
+
+**改动**：
+- 新建 `src/base/xconfig.h.in`
+- CMakeLists.txt 加 `check_*` 检测 + `configure_file`
+- 替换案例：
+  - `#ifdef __APPLE__` 用 arc4random_buf → `#if XRAY_HAVE_ARC4RANDOM`
+  - `#ifdef __linux__` 用 epoll → `#if XRAY_HAVE_EPOLL`
+  - `#ifdef __linux__` 用 io_uring → `#if XRAY_HAVE_IO_URING`
+- 保留 `XR_OS_WINDOWS` 用于真正只与 OS 绑定的差异（如 `SwitchToThread` vs `sched_yield`）
+
+**估时**：2-3 小时。**风险**：低-中（capability 检测要在所有 CI runner 上跑通）。
+
+### PR6 — lint 规则 + 文档落地
+
+**目标**：固化三条铁律，防回潮。
+
+**交付物**：
+- `scripts/lint_platform.sh`：grep 检查
+  ```bash
+  # R2: 正文目录禁止包含 OS 头
+  ! grep -rE '<unistd\.h>|<sys/.*\.h>|<pthread\.h>|<windows\.h>|<sched\.h>|<dirent\.h>|<dlfcn\.h>|<fcntl\.h>|<poll\.h>|<netinet/.*\.h>|<arpa/.*\.h>|<netdb\.h>|<winsock2\.h>|<ws2tcpip\.h>|<bcrypt\.h>|<io\.h>|<process\.h>|<sys/mman\.h>|<sys/uio\.h>' \
+       src/{coro,vm,jit,runtime,frontend,module,api,aot,app} stdlib --include='*.c' --include='*.h'
+  
+  # R3: 正文目录禁止用 OS 名 ifdef
+  ! grep -rE '#\s*if(def)?\s+(_WIN32|_WIN64|__APPLE__|__linux__|__FreeBSD__|_MSC_VER|__GNUC__|__clang__|__MINGW)' \
+       src/{coro,vm,jit,runtime,frontend,module,api,aot,app} stdlib --include='*.c' --include='*.h'
+  
+  # R1: 公共 header 禁止包含非 freestanding 系统头
+  ! grep -rE '<(unistd|sys/.*|pthread|windows|sched|dirent|dlfcn|fcntl|poll|netinet|arpa|netdb|winsock2|ws2tcpip|bcrypt|io|process)\.h>' \
+       include --include='*.h'
+  ```
+- `.github/workflows/ci.yml`：加 `Platform Lint` job
+- `docs/rules/platform.md`：完整规范（命名、目录、加平台流程、PR checklist）
+- `docs/rules/main.md` 顶部加引用：`platform.md` 列入 conditional rules
+
+**估时**：1-2 小时。**风险**：极低。
+
+---
+
+## 四、Windows port 与本重构的关系
+
+| 当前状态 | 重构后状态 | 受益 |
+|---|---|---|
+| Windows 编译错散落在 7 个正文目录 | 全部集中到 `src/os/win/` 实现 | 改一个文件等于改一个 subsystem |
+| `xnetpoll.c` 内嵌 stub | `src/os/win/poll_iocp.c` 单独实现 | IOCP 实现专属，不影响其他 |
+| 加 FreeBSD 要改 28 个文件 | 加 `src/os/freebsd/` 目录 | 正文 0 改动 |
+
+**所以 Windows port 的最佳路径是**：
+1. 先在 `main` 上完成重构（PR1-PR4）
+2. 再在 `windows-port` 分支上往 `src/os/win/` 填实现
+3. 你那台 i7 此时的工作量会大幅减少（结构清晰、范围明确）
+
+---
+
+## 五、Git 备份与分支策略
+
+### 5.1 备份点
+
+```bash
+git tag -a pre-platform-refactor -m "Snapshot before platform layer refactor"
+git push origin pre-platform-refactor
+```
+
+任何 PR 出问题：`git reset --hard pre-platform-refactor`。
+
+### 5.2 工作分支
+
+- `main`：始终绿（macOS + Linux + ctest 87/87）
+- `refactor/platform-layout`：PR1-PR6 的工作分支，**每个 PR 一组 commit**
+- 每个 PR 完成后 fast-forward 合 `main`，不另开 PR review 流程（单人项目）
+
+### 5.3 windows-port 分支的同步
+
+`windows-port` 分支（你那台 i7 用）从每次 main 合并后 rebase：
+```bash
+git checkout windows-port
+git fetch origin
+git rebase origin/main
+git push --force-with-lease
+```
+
+---
+
+## 六、验收清单
+
+完成时必须全部满足：
+
+- [ ] `grep -rn "XR_PLATFORM_" src include stdlib` 返回 0 行
+- [ ] `grep -rln "_WIN32\|__APPLE__\|__linux__\|_MSC_VER" src/{coro,vm,jit,runtime,frontend,module,api,aot,app} stdlib --include='*.c' --include='*.h'` 返回 0 文件
+- [ ] `grep -rln "<unistd.h>\|<sys/" src/{coro,vm,jit,runtime,frontend,module,api,aot,app} stdlib --include='*.c' --include='*.h'` 返回 0 文件
+- [ ] `include/*.h` 仅 include `<stdint.h>` `<stddef.h>` `<stdbool.h>` 三个系统头
+- [ ] `src/os/unix/*.c` 与 `src/os/win/*.c` 不再有 `#ifndef _WIN32` 顶层 guard
+- [ ] CMakeLists.txt 平台分支统一在 `XrayPlatform.cmake` 模块
+- [ ] macOS + Linux ctest **87/87 通过**
+- [ ] CI Windows build：从当前的 7 类编译错降至 ≤ 2 类（剩下的应是 IOCP / `src/os/win/` 内具体实现，不再是分散的正文 ifdef）
+- [ ] `scripts/lint_platform.sh` 通过
+- [ ] `docs/rules/platform.md` 提交
+- [ ] `docs/rules/main.md` 顶部引用 `platform.md`
+
+---
+
+## 七、风险与回滚
+
+| 风险 | 缓解 |
+|---|---|
+| PR2 大量文件移动后 include 路径错乱 | git mv 逐个改；每改一个 subsystem 跑一次 ctest |
+| PR3 拆 `include/xray_platform.h` 影响 stdlib/* 大量 TU | 用脚本批量替换 + 编译验证；保留旧 header 一个 PR 周期作为兼容（仅过渡） |
+| PR4 删除 ifdef body guard 后某平台漏文件 | CMake 用 `if(WIN32)` 显式分支；CI 三平台都跑 build |
+| capability 检测在某 CI runner 失败（如 macOS 没 epoll 但 cmake 没正确检测） | 每个 `XRAY_HAVE_*` 加默认值 + 文档示例 |
+
+**全局回滚**：`git reset --hard pre-platform-refactor && git push --force-with-lease`。
+
+---
+
+## 八、不在本次范围
+
+明确**不做**的事项（避免范围蔓延）：
+
+- `include/xray_module_sdk.h` 反向依赖 `src/runtime/*` 的整治 → 单独立项 011
+- 正文目录用 `xr_thread_*` / `xr_time_*` / `xr_socket_*` 这些**没有 `_os_` 前缀的**抽象，本次保留原名（避免一次性大改造）；统一前缀到 `xr_os_*` 留给 011
+- IOCP / io_uring 实际实现 → 结构就位后单独立项
+- `xnetpoll.c` 在 Windows 上的真实实现（仍保留 stub）
+
+---
+
+**实施开始时间**：本文档落地后立即开始 PR1。
