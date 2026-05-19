@@ -20,14 +20,14 @@
   bash scripts/check_comment_rules.sh
   ```
 
-### 2026-05-18 — xr_tref_tuple: empty tuple 断言失败 (4 ctest)
+### 2026-05-18 — xr_tref_tuple: empty tuple 断言失败 (3 ctest)
 
-- **现象**：`test_fmt_roundtrip`、`test_vm_exception`、`test_xi_lower`、`test_xi_opt` 四个 ctest 运行时触发 `[FATAL] xtype_ref.c:163: Check failed: xr_tref_tuple: empty tuple`，进程 abort。
-- **root cause**：`xr_tref_tuple()` 在 `xtype_ref.c:163` 断言 tuple 元素数 > 0，但某处构造了空 tuple type ref。具体调用者未排查。
-- **影响**：112/116 ctest 通过；这 4 个失败在 `refactor/unified-class` 分支创建前已存在，与本次改动无关。
+- **现象**：`test_fmt_roundtrip`、`test_xi_lower`、`test_xi_opt` 三个 ctest 运行时触发 `[FATAL] xtype_ref.c:163: Check failed: xr_tref_tuple: empty tuple`，进程 abort。
+- **root cause**：`xr_tref_tuple()` 在 `xtype_ref.c:163` 断言 tuple 元素数 > 0，但 `-> ()` 返回类型注解被 parser 解析为空 tuple type ref。具体调用者未排查。
+- **影响**：114/117 ctest 通过；这 3 个失败在 Exception 统一类迁移前已存在，与该改动无关。
 - **复现方法**：
   ```bash
-  cd build && ctest -R "test_fmt_roundtrip|test_vm_exception|test_xi_lower|test_xi_opt" --output-on-failure
+  cd build && ctest -R "test_fmt_roundtrip|test_xi_lower|test_xi_opt" --output-on-failure
   ```
 
 ---
