@@ -20,19 +20,22 @@
   bash scripts/check_comment_rules.sh
   ```
 
-### 2026-05-18 — xr_tref_tuple: empty tuple 断言失败 (3 ctest)
-
-- **现象**：`test_fmt_roundtrip`、`test_xi_lower`、`test_xi_opt` 三个 ctest 运行时触发 `[FATAL] xtype_ref.c:163: Check failed: xr_tref_tuple: empty tuple`，进程 abort。
-- **root cause**：`xr_tref_tuple()` 在 `xtype_ref.c:163` 断言 tuple 元素数 > 0，但 `-> ()` 返回类型注解被 parser 解析为空 tuple type ref。具体调用者未排查。
-- **影响**：114/117 ctest 通过；这 3 个失败在 Exception 统一类迁移前已存在，与该改动无关。
-- **复现方法**：
-  ```bash
-  cd build && ctest -R "test_fmt_roundtrip|test_xi_lower|test_xi_opt" --output-on-failure
-  ```
-
 ---
 
 ## 历史已修复
+
+### 2026-05-19 — xr_tref_tuple: empty tuple 断言失败 + TUPLE_NEW 无法 DCE  ✅ 已修复
+
+- **现象**：`test_fmt_roundtrip`、`test_xi_lower`、`test_xi_opt`、`0540_higher_order.xr`、`1230_function_type_annotation.xr`、`1231_type_alias.xr` 触发 `[FATAL] xtype_ref.c:163: Check failed: xr_tref_tuple: empty tuple`；修掉空 tuple 后 `test_xi_opt` 的 `tuple_new_eliminated_after_full_projection` 又因 `TUPLE_NEW` 被错误归类为 SIDE_EFFECT 而保留。
+- **真正根因**：
+  1. `xparse_type.c` 解析 `(T1, T2)` 后若没有 `->` 跟随，对 count=0 的情况仍调用 `xr_tref_tuple(...,0)`，触发 `xr_tref_tuple: empty tuple` 断言。`()` 应当是 unit 类型 `XR_TREF_UNIT`，不是 0 元 tuple。
+  2. `xi_effect.h` 把 `XI_TUPLE_NEW` 与可变容器 (`ARRAY_NEW`/`MAP_NEW` 等) 同列为 `SIDE_EFFECT | WRITES_MEM`。tuple 是不可变值，分配结果只能通过 use chain 观察，未使用的 `TUPLE_NEW` 本应是 DCE 候选。
+- **修复**：
+  1. `xparse_type.c`：`(...)` 且无 `->` 时，count==0 返回 `xr_tref_unit()`；count>0 保留 tuple 路径。
+  2. `xi_effect.h`：拆出"纯不可变分配"组，`XI_TUPLE_NEW` 只标 `WRITES_MEM`，不再标 `SIDE_EFFECT`，DCE 可正确收割。
+- **验证**：
+  - `ctest`：117/117 通过。
+  - 回归脚本：307/307 通过。
 
 ### 2026-05-14 — 编译错误测试集 readonly/strict-field/index 失败项  ✅ 已修复
 
