@@ -945,12 +945,13 @@ UnaryExpr ::= ('-' | '+' | '!' | '~') UnaryExpr
 | `+x` | 数值 | 同 | 标识，几乎无用 |
 | `!x` | `bool` | `bool` | 逻辑非；**不接受非 bool**（不像 JS） |
 | `~x` | 整数 | 同 | 按位取反 |
-| `x++` `x--` | 整数 | 同 | 后缀自增/减，返回**修改前**的值（仅作为后缀提供） |
+| `x++` `x--` | 整数 | 同 | 后缀自增/减；返回**修改后**的值（与 C/Java 不同，本质上是 `x = x + 1` 的赋值结果） |
 
 **自增/减语义**：
 - xray **只提供后缀** `x++` / `x--`，不支持前缀 `++x` / `--x`（编译错误："prefix ++/-- not supported, use postfix form"）。
+- 等价于赋值 `x = x + 1` / `x = x - 1`；表达式值即赋值后的新值。
+- 不能内联在二元表达式中（如 `a + x++`、`f(x++)`、`x++ + 1`）；解析器会报"++/-- must be standalone statement"。允许 `let y = x++`（赋值左侧紧邻），此时 `y` 取到的是修改后的值。
 - 仅作用于左值（变量、字段、索引）。
-- 在表达式中可链式：`a[i++]` 合法。
 - 浮点数**不支持** `++`/`--`（编译错误）。
 
 ### 3.3 二元表达式
@@ -1669,14 +1670,14 @@ try {
 
 throw new Exception("error message")        // ✅ Exception 派生
 throw new HttpError(500, "internal")        // ✅ 自定义 Exception 子类
-// throw "msg"                              // ❌ E0820: 必须是 Exception 派生
+// throw "msg"                              // ❌ E0370: 必须是 Exception 派生
 ```
 
 **语义**：
 - `try` 必须至少跟 `catch` 或 `finally` 之一。
 - `catch (e)` 中 `e` 类型默认 `Exception`；可带类型注解 `catch (e: HttpError)` 实现类型过滤；多个 `catch` 子句按声明顺序匹配。
 - `finally` **保证执行**，无论是否抛异常或 return。
-- `throw` 操作数静态类型必须是 `Exception` 派生（`E0820`）。
+- `throw` 操作数静态类型必须是 `Exception` 派生（`E0370`）。
 - 完整异常语义见 [§8](#8-错误处理-error-handling)。
 
 ### 4.9 `defer`
@@ -2874,15 +2875,15 @@ Xray 同时提供两套互补的错误处理机制：
 
 #### 8.1.1 `throw` 表达式
 
-`throw expr` 抛出异常。**`expr` 的静态类型必须是 `Exception` 或其派生类**。其它类型在编译期被拒绝（错误码 `E0820` `XR_ERR_THROW_NOT_EXCEPTION`）：
+`throw expr` 抛出异常。**`expr` 的静态类型必须是 `Exception` 或其派生类**。其它类型在编译期被拒绝（错误码 `E0370` `XR_ERR_ANALYZE_THROW_NON_EXCEPTION`）：
 
 ```xray
 throw new Exception("oops")                 // ✅
 throw new HttpError(404, "not found")       // ✅ 自定义 Exception 子类
-throw "oops"                                // ❌ E0820: throw 必须是 Exception 派生
-throw 42                                    // ❌ E0820
-throw { code: 500 }                         // ❌ E0820
-throw null                                  // ❌ E0820（静态类型为 null）
+throw "oops"                                // ❌ E0370: throw 必须是 Exception 派生
+throw 42                                    // ❌ E0370
+throw { code: 500 }                         // ❌ E0370
+throw null                                  // ❌ E0370（静态类型为 null）
 ```
 
 > **设计说明**：xray 早期允许 `throw` 任意值（字符串、整数、对象等）；自当前版本起，参考 Python 3 / Java / Swift 收紧为"必须 Exception 派生"。这与 xray "无 `any` 类型"的设计原则自洽——`catch (e)` 中 `e` 的静态类型恒为 `Exception`，工具链可稳定提供补全和类型分析。
@@ -2913,27 +2914,24 @@ try {
 **执行顺序**：
 
 1. 执行 `try` 块
-2. 若有异常逃出，调起 **第一个匹配类型** 的 `catch` 子句
+2. 若有异常逃出，进入 `catch` 块（若存在），`e` 绑定到该异常
 3. 无论是否异常，都执行 `finally` 块（保证执行）
-4. 若所有 `catch` 都不匹配，异常在 `finally` 之后继续向上传播
+4. 若没有 `catch`，异常在 `finally` 之后继续向上传播
 
-**`catch (e)`** 中 `e` 的隐含类型为 `Exception`。`catch (e: T)` 限定为类型 `T` 仅捕获 `T` 或其派生：
+**`catch (e)`** 中 `e` 的静态类型恒为 `Exception`：
 
 ```xray
 try {
     riskyIO()
-    riskyParse()
-} catch (e: IOError) {
-    log.error("io:", e.message)
-} catch (e: ParseError) {
-    log.error("parse:", e.message)
 } catch (e) {
-    // 兜底，e 类型为 Exception
-    log.error("other:", e)
+    log.error(e.message)
+    if (e is IOError) {
+        // 在分支里手动按子类窄化处理
+    }
 }
 ```
 
-多个 `catch` 子句按声明顺序匹配；首个匹配执行。一个 `try` **必须** 至少跟随 `catch` 或 `finally` 之一。
+当前实现的 `try` 只支持**单个 `catch` 子句**与可选的 `finally`，且 `catch` 不支持类型过滤（`catch (e: T)` **TBD**）。需要按子类分发时请在 `catch` 块内用 `is T` 判断或 `match`。一个 `try` **必须**至少跟随 `catch` 或 `finally` 之一。
 
 #### 8.1.3 重抛
 
@@ -2942,7 +2940,7 @@ try {
 ```xray
 try {
     fetch(url)
-} catch (e: NetworkError) {
+} catch (e) {
     log.error("network failed:", e.message)
     throw new ServiceError("upstream unavailable", cause: e)  // 用 cause 链传递原因
 }
@@ -4723,7 +4721,7 @@ class Exception {
 }
 ```
 
-`throw` 表达式的操作数静态类型必须是 `Exception` 或其派生类（见 §8.1.1）；其它类型在编译期被拒绝（错误码 `E0820`）。VM 抛出的运行时错误也使用此 `Exception` 类型。
+`throw` 表达式的操作数静态类型必须是 `Exception` 或其派生类（见 §8.1.1）；其它类型在编译期被拒绝（错误码 `E0370`）。VM 抛出的运行时错误也使用此 `Exception` 类型。
 
 栈展开：VM `xvm_unwind_stack()` 按 try-table 查找 catch handler，逐帧释放局部、执行 finally / defer，到达 catch 后跳转。详见 §8。
 
@@ -4968,7 +4966,7 @@ Bytecode  →  AOT (machine code)
 
 | 码 | 名称 | 描述 |
 |--|--|--|
-| `E0820` | `XR_ERR_THROW_NOT_EXCEPTION` | `throw` 操作数静态类型不是 `Exception` 派生 |
+| `E0820` | `XR_ERR_THROW_NOT_EXCEPTION` | 已合并到 `E0370`（见 §8.1.1）；代码仅保留在错误码表中以免重复分配 |
 | `E0821` | `XR_ERR_TRY_BANG_BAD_OPERAND` | `try!` 操作数不是 `Result<T,E>` 或 `T?` |
 | `E0822` | `XR_ERR_TRY_BANG_NON_EXCEPTION_ERR` | `try!` 跨轨升级时 `E` 不是 `Exception` 派生 |
 | `E0823` | `XR_ERR_MATCH_NOT_EXHAUSTIVE` | 已合并到 `E0371`（见 §6.3.3）；代码仅保留在错误码表中以免重复分配 |
@@ -4990,7 +4988,7 @@ class Exception {
 }
 ```
 
-`throw` 操作数的静态类型**必须**是 `Exception` 派生（见 §8.1.1 / `E0820`）。如需结构化错误，继承 `Exception` 添加业务字段：
+`throw` 操作数的静态类型**必须**是 `Exception` 派生（见 §8.1.1 / `E0370`）。如需结构化错误，继承 `Exception` 添加业务字段：
 
 ```xray
 class HttpError : Exception {
@@ -5135,7 +5133,7 @@ MatchArm  ::= Pattern ('if' '(' Expression ')')? '->' (Expression | Block)
 TryExpr     ::= 'try?' Expression | 'try!' Expression
 CatchBlock  ::= 'catch!' Block
 
-ThrowExpr   ::= 'throw' Expression                // operand 静态类型必须是 Exception 派生（E0820）
+ThrowExpr   ::= 'throw' Expression                // operand 静态类型必须是 Exception 派生（E0370）
 
 ArgList ::= Expression (',' Expression)*
 ```
