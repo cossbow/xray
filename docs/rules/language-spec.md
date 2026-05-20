@@ -1654,8 +1654,8 @@ return (a, b)          // 多返回值，必须用括号包裹元组
 ```ebnf
 ThrowStmt ::= 'throw' Expression
 
-TryStmt   ::= 'try' Block CatchClause? FinallyClause?
-CatchClause   ::= 'catch' ('(' Identifier (':' Type)? ')')? Block
+TryStmt       ::= 'try' Block CatchClause* FinallyClause?
+CatchClause   ::= 'catch' '(' Identifier (':' Type)? ')' Block
 FinallyClause ::= 'finally' Block
 ```
 
@@ -2914,24 +2914,32 @@ try {
 **执行顺序**：
 
 1. 执行 `try` 块
-2. 若有异常逃出，进入 `catch` 块（若存在），`e` 绑定到该异常
+2. 若有异常逃出，按声明顺序逐一尝试匹配 `catch` 子句；首个匹配者执行其块体
 3. 无论是否异常，都执行 `finally` 块（保证执行）
 4. 若没有 `catch`，异常在 `finally` 之后继续向上传播
 
-**`catch (e)`** 中 `e` 的静态类型恒为 `Exception`：
+**类型化 catch 与多 catch 子句**：
+
+`catch` 变量可带类型注解 `catch (e: T)`，运行时用 `is T` 判断是否匹配。支持多个 `catch` 子句，按声明顺序匹配，首个匹配者执行：
 
 ```xray
 try {
     riskyIO()
+} catch (e: HttpError) {
+    log.error("HTTP:", e.statusCode)
+} catch (e: DbError) {
+    log.error("DB:", e.query)
 } catch (e) {
-    log.error(e.message)
-    if (e is IOError) {
-        // 在分支里手动按子类窄化处理
-    }
+    log.error("unexpected:", e.message)
 }
 ```
 
-当前实现的 `try` 只支持**单个 `catch` 子句**与可选的 `finally`，且 `catch` 不支持类型过滤（`catch (e: T)` **TBD**）。需要按子类分发时请在 `catch` 块内用 `is T` 判断或 `match`。一个 `try` **必须**至少跟随 `catch` 或 `finally` 之一。
+**规则**：
+- 无类型注解的 `catch (e)` 是"catch-all"，匹配所有异常；`e` 静态类型为 `Exception`。
+- 有类型注解的 `catch (e: T)` 仅当异常值 `is T` 为真时匹配；`e` 静态类型为 `T`。
+- 多个 `catch` 子句按声明顺序匹配，首个匹配者执行。
+- 若所有类型化子句均不匹配且没有 catch-all，异常被自动重抛。
+- 一个 `try` **必须**至少跟随 `catch` 或 `finally` 之一。
 
 #### 8.1.3 重抛
 
@@ -2942,7 +2950,7 @@ try {
     fetch(url)
 } catch (e) {
     log.error("network failed:", e.message)
-    throw new ServiceError("upstream unavailable", cause: e)  // 用 cause 链传递原因
+    throw new ServiceError("upstream unavailable", e)  // 用 cause 链传递原因
 }
 ```
 
@@ -2972,7 +2980,7 @@ class Exception {
 
 ```xray
 throw new Exception("connection refused")
-throw new Exception("upstream failed", cause: originalErr)
+throw new Exception("upstream failed", originalErr)
 ```
 
 #### 8.1.5 自定义 `Exception` 子类

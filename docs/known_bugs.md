@@ -20,6 +20,20 @@
   bash scripts/check_comment_rules.sh
   ```
 
+### 2026-05-20 — Exception subclass instance crashes when assigned to variable
+
+- **现象**：`let err = new HttpError(500, "server error")` 静默崩溃（exit code 1，无输出），而 `throw new HttpError(...)` + catch 正常工作。`let e = new Exception(...)` 也正常。
+- **root cause**：Exception 是 native class（`XR_CLASS_BUILTIN | XR_CLASS_HAS_NATIVE_BODY`），子类构造走 `vm_invoke_class` 时分配大小或 native body 布局计算对用户继承场景有缺陷。`throw` 路径绕过了普通变量赋值。
+- **影响**：任何 Exception 子类在非 throw 场景（存入变量、记录日志、存入集合）都会崩溃。spec §18.8 鼓励继承 Exception 添加业务字段，此 bug 阻塞该用法。
+- **复现方法**：
+  ```xray
+  class MyError extends Exception {
+      constructor(message: string) { super(message) }
+  }
+  let err = new MyError("oops")
+  print(err.message)
+  ```
+
 ---
 
 ## 历史已修复
