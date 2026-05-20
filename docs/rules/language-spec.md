@@ -3709,7 +3709,7 @@ shared const cha = new Channel(3)          // 元素类型从首次 send 推断
 | `sendTimeout(v, ms)` | `(T, int) -> bool` | 带超时发送；超时返回 `false` |
 | `recvTimeout(ms)` | `(int) -> (T, bool)` | 带超时接收；超时返回 `ok=false` |
 | `close()` | `() -> ()` | 关闭 channel；幂等 |
-| `closed` | `bool`（属性） | channel 是否已关闭 |
+| `isClosed` | `bool`（属性） | channel 是否已关闭 |
 
 ```xray
 shared const ch = new Channel<int>(2)
@@ -4399,7 +4399,7 @@ let b4 = new Bytes([72, 101, 108, 108, 111])  // 从 int 数组构造
 
 | 成员 | 类型/说明 |
 |--|--|
-| `closed` | `bool`（属性）：channel 是否已关闭 |
+| `isClosed` | `bool`（属性）：channel 是否已关闭 |
 | `send(v)` | 阻塞发送；channel 已关闭时抛异常 |
 | `recv(): T` | 阻塞接收；channel 已关闭且缓冲为空时抛异常 |
 | **`trySend(v): bool`** | 非阻塞发送：成功返回 `true`，失败返回 `false`（缓冲满或已关闭） |
