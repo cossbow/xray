@@ -1361,14 +1361,27 @@ str[0:5]                // 字符串切片
 ### 3.12 闭包（箭头函数）
 
 ```ebnf
-ArrowFunction ::= '(' ArrowParams? ')' '->' (Expression | Block)
-ArrowParams ::= ArrowParam (',' ArrowParam)*
-ArrowParam ::= Identifier ':' Type           // 参数类型必须标注
+ArrowFunction ::= BareLambda | ParenLambda | NamedFunction
+BareLambda    ::= Identifier '->' (Expression | Block)
+ParenLambda   ::= '(' ArrowParams? ')' '->' (Expression | Block)
+ArrowParams   ::= ArrowParam (',' ArrowParam)*
+ArrowParam    ::= Identifier (':' Type)?      // 类型可省略，由上下文推断
+NamedFunction ::= 'fn' '(' Params ')' ('->' Type)? Block
 ```
 
 ```xray
-let double = (x: int) -> x * 2                // 返回类型由分析器推断
-let add = (a: int, b: int) -> a + b           // 同上
+// 裸 lambda：单参数、无括号、无类型注解（类型由上下文推断）
+let doubled = arr.map(x -> x * 2)
+let evens = arr.filter(x -> x % 2 == 0)
+
+// 带括号、无类型注解（多参数或需要消歧义时使用）
+let sum = arr.reduce((acc, x) -> acc + x, 0)
+
+// 带括号、有类型注解（独立使用或需要显式类型时）
+let double = (x: int) -> x * 2
+let add = (a: int, b: int) -> a + b
+
+// 命名函数
 let inc = fn(x: int) -> int {
     let y = x + 1
     return y
@@ -1376,7 +1389,9 @@ let inc = fn(x: int) -> int {
 ```
 
 **关键规则**：
-- **参数类型注解必须**：`(x) -> x * 2` 是编译错误。返回类型可省略由推断决定。
+- **裸 lambda**（`x -> expr`）：仅限**调用参数位置**，单参数无括号。参数类型由被调函数签名或容器元素类型推断。
+- **带括号 lambda**（`(x) -> expr`、`(x, y) -> expr`）：任意位置可用。参数类型可省略，由上下文推断；推断失败时报 E0365。
+- **显式类型注解**（`(x: int) -> expr`）：任何位置都合法，不依赖上下文推断。
 - 单表达式形式 `-> expr` 自动 `return`。
 - 块形式 `-> { ... }` 用显式 `return`。
 - 捕获规则：见 §7.4 闭包捕获。**`go` 协程闭包对 `let` 变量的捕获是编译错误**——必须显式 `shared const`、`move`、或参数传递。
