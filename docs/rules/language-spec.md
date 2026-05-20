@@ -433,7 +433,7 @@ RegexFlag ::= 'g' | 'i' | 'm' | 's'
 
 `++` `--`
 
-支持前缀和后缀两种形式，**语义与 C 相同**。
+仅支持**后缀**形式 `x++` / `x--`；前缀 `++x` / `--x` 编译报错。详见 §3.2。
 
 #### 1.7.8 类型相关
 
@@ -906,7 +906,7 @@ Reflect.getAllTypes()       // 所有已注册类型
 | 级 | 运算符 | 结合性 | 说明 |
 |--|--|--|--|
 | 17 | `(...)` `[...]` `.x` `?.x` `f()` `e!` | 左 | 后缀：分组、索引、成员、可选链、调用、强制解包 |
-| 16 | 前缀 `-` `+` `!` `~` `++` `--` `new` `move` `await` `go` | 右 | 一元前缀 + 协程操作 |
+| 16 | 前缀 `-` `+` `!` `~` `new` `move` `await` `go` | 右 | 一元前缀 + 协程操作（`++` / `--` 仅后缀） |
 | 15 | `as` `is` | 左 | 类型转换 / 检查（`as T?` 安全形式靠目标类型可空，非独立 `as?` 运算符） |
 | 14 | `*` `/` `%` | 左 | 乘除取模 |
 | 13 | `+` `-` | 左 | 加减 |
@@ -1402,7 +1402,7 @@ let result = match x {
 **语义**：
 - 自上而下匹配第一个成功的分支。
 - 所有分支表达式必须返回相同类型（或 union）。
-- **穷尽性**：编译器**不强制**穷尽匹配；运行时无匹配抛 `XR_ERR_RUNTIME`。
+- **穷举性**：对 enum 变量（ADT 与简单枚举）编译器强制穷举。对其他表达式不强制，运行时无匹配抛 `Exception(E0442)`。
 - 模式详见 [§6](#6-模式-patterns)。
 
 ### 3.14 `new`
@@ -2581,7 +2581,7 @@ match (msg) {
 `match` 一个 ADT enum 时，编译器执行**穷举性分析**：
 
 - 若所有变体都被覆盖（含 `_` 兜底），通过
-- 若漏写某变体，编译报错 `E0823 XR_ERR_MATCH_NOT_EXHAUSTIVE`，并提示缺失的变体名
+- 若漏写某变体，编译报错 `E0371 XR_ERR_ANALYZE_MATCH_NOT_EXHAUSTIVE`，并提示缺失的变体名
 
 ```xray
 enum NetEvent {
@@ -2594,11 +2594,11 @@ enum NetEvent {
 match (event) {
     NetEvent.Connected            -> "ok",
     NetEvent.Disconnected(r)      -> "down: ${r}",
-    // ❌ E0823: 缺失变体 DataReceived 和 Error；可加 `_ -> ...` 兜底
+    // ❌ E0371: 缺失变体 DataReceived 和 Error；可加 `_ -> ...` 兜底
 }
 ```
 
-> 简单枚举（无 payload，类似 C 风格）当前**不**强制穷举（与历史行为一致），但建议总是提供 `_` 兜底。ADT enum **强制**穷举。
+> 简单枚举（无 payload）与 ADT enum 均**强制**穷举；只要包含 `_` 兜底分支即可跳过检查。对非 enum 变量（如 `int`）不强制。
 
 ### 6.4 类型模式 `is T`
 
@@ -2666,10 +2666,10 @@ let { name, age } = user
 
 详见 §5.1.5。`match` 中的对象/数组结构解构 **TBD**。
 
-### 6.10 穷尽性与匹配失败
+### 6.10 穷举性与匹配失败
 
-- 编译器**不强制**穷尽匹配。
-- 运行时无分支匹配 → 抛 `XR_ERR_RUNTIME` (`E0440`)。
+- 对 enum 表达式的 `match` 强制穷举（错误码 `E0371`，见 §6.3.3）。
+- 其他类型不强制；运行时无分支匹配 → 抛 `Exception` 错误码 `E0442`（见 §18.x）。
 - 建议总是提供 `_` 兜底。
 
 ---
@@ -4971,7 +4971,7 @@ Bytecode  →  AOT (machine code)
 | `E0820` | `XR_ERR_THROW_NOT_EXCEPTION` | `throw` 操作数静态类型不是 `Exception` 派生 |
 | `E0821` | `XR_ERR_TRY_BANG_BAD_OPERAND` | `try!` 操作数不是 `Result<T,E>` 或 `T?` |
 | `E0822` | `XR_ERR_TRY_BANG_NON_EXCEPTION_ERR` | `try!` 跨轨升级时 `E` 不是 `Exception` 派生 |
-| `E0823` | `XR_ERR_MATCH_NOT_EXHAUSTIVE` | ADT enum 的 `match` 缺少变体覆盖且无 `_` 兜底 |
+| `E0823` | `XR_ERR_MATCH_NOT_EXHAUSTIVE` | 已合并到 `E0371`（见 §6.3.3）；代码仅保留在错误码表中以免重复分配 |
 | `E0824` | `XR_ERR_UNWRAP_NON_EXCEPTION_ERR` | `Result<T, E>.unwrap()` 中 `E` 不是 `Exception` 派生 |
 
 ### 18.8 错误对象结构
