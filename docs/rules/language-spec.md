@@ -156,7 +156,13 @@ IdentCont  ::= IdentStart | '0'..'9'
 
 **保留约束**：标识符不能与保留关键字相同（见 §1.5）；可与**上下文敏感关键字**相同（如 `from`、`to`、`default`、`ref`、`move`、`linked`、`supervisor`、`after` 可作为普通标识符）。
 
-字符 `_` 作为完整标识符时，仅在 `match` 模式中视为**通配符**（见 §6.7）；其他场合 `_` 是普通标识符。
+字符 `_` 是**专用通配符 token**，不是普通标识符：
+
+- 在 `match` 模式中表示**通配符**（见 §6.7）。
+- 在 `for-in` 中可用于忽略键或值：`for (_, v in m) { ... }`。
+- 在解构绑定中可用于忽略位置：`let (a, _) = (1, 2)`。
+- **不能**作为 `let _ = expr`、函数参数名或被引用的变量名；编译器会报"expected variable name"。
+- 多下划线名（如 `__tmp`）是普通标识符。
 
 ### 1.5 关键字
 
@@ -427,7 +433,7 @@ RegexFlag ::= 'g' | 'i' | 'm' | 's'
 
 `++` `--`
 
-支持前缀和后缀两种形式，**语义与 C 相同**。
+仅支持**后缀**形式 `x++` / `x--`；前缀 `++x` / `--x` 编译报错。详见 §3.2。
 
 #### 1.7.8 类型相关
 
@@ -491,7 +497,7 @@ Xray 是静态类型语言；每个表达式在编译期有确定类型。类型
 
 | 类别 | 示例 |
 |--|--|
-| Primitive | `int`、`float`、`bool`、`string`、`void` |
+| Primitive | `int`、`float`、`bool`、`string`、`()`（Unit，无返回值） |
 | 精确整数 | `int8`、`int16`、`int32`、`int64`、`uint8`..`uint64` |
 | 精确浮点 | `float32`、`float64` |
 | 容器 | `Array<T>`、`Map<K,V>`、`Set<T>`、`Channel<T>`、`Bytes`（即 `Array<uint8>`） |
@@ -565,11 +571,18 @@ let b = a ?? 0                  // null 合并：b = 0
 
 底层使用引用计数（ARC）+ 字符串驻留（interning）优化。
 
-#### 2.3.5 `void`
+#### 2.3.5 Unit `()`（无返回值）
 
-仅作为函数返回类型出现，表示"无返回值"。`void` 不是值类型，不能赋给变量。
+xray 用 **0-元组 `()`** 表示"无返回值"（Unit 类型）：
 
-> **历史**：旧语法支持过 `void` 字面量，自 v0.x 起移除（错误码 `E0804`）。
+```xray
+fn log(msg: string) -> () { print(msg) }   // 显式 Unit 返回
+fn ping() { print("pong") }                  // 省略返回类型 = ()
+let r: () = log("hi")                        // 允许；r 是 Unit 值
+```
+
+- 一个函数省略返回类型等同于 `-> ()`。
+- `void` 关键字已移除（错误码 `E0804`）：写 `fn f() -> void` 会被拒绝，改用 `-> ()` 或省略返回类型。
 
 ### 2.4 复合类型
 
@@ -893,7 +906,7 @@ Reflect.getAllTypes()       // 所有已注册类型
 | 级 | 运算符 | 结合性 | 说明 |
 |--|--|--|--|
 | 17 | `(...)` `[...]` `.x` `?.x` `f()` `e!` | 左 | 后缀：分组、索引、成员、可选链、调用、强制解包 |
-| 16 | 前缀 `-` `+` `!` `~` `++` `--` `new` `move` `await` `go` | 右 | 一元前缀 + 协程操作 |
+| 16 | 前缀 `-` `+` `!` `~` `new` `move` `await` `go` | 右 | 一元前缀 + 协程操作（`++` / `--` 仅后缀） |
 | 15 | `as` `is` | 左 | 类型转换 / 检查（`as T?` 安全形式靠目标类型可空，非独立 `as?` 运算符） |
 | 14 | `*` `/` `%` | 左 | 乘除取模 |
 | 13 | `+` `-` | 左 | 加减 |
@@ -916,7 +929,7 @@ Reflect.getAllTypes()       // 所有已注册类型
 ### 3.2 一元表达式
 
 ```ebnf
-UnaryExpr ::= ('-' | '+' | '!' | '~' | '++' | '--') UnaryExpr
+UnaryExpr ::= ('-' | '+' | '!' | '~') UnaryExpr
             | 'new' Identifier TypeArgs? '(' ArgList? ')'
             | 'move' UnaryExpr
             | 'await' ('all' | 'any')? UnaryExpr
@@ -932,12 +945,12 @@ UnaryExpr ::= ('-' | '+' | '!' | '~' | '++' | '--') UnaryExpr
 | `+x` | 数值 | 同 | 标识，几乎无用 |
 | `!x` | `bool` | `bool` | 逻辑非；**不接受非 bool**（不像 JS） |
 | `~x` | 整数 | 同 | 按位取反 |
-| `++x` `--x` | 整数 | 同 | 前缀自增/减，返回**修改后**的值 |
-| `x++` `x--` | 整数 | 同 | 后缀自增/减，返回**修改前**的值 |
+| `x++` `x--` | 整数 | 同 | 后缀自增/减，返回**修改前**的值（仅作为后缀提供） |
 
 **自增/减语义**：
+- xray **只提供后缀** `x++` / `x--`，不支持前缀 `++x` / `--x`（编译错误："prefix ++/-- not supported, use postfix form"）。
 - 仅作用于左值（变量、字段、索引）。
-- 在表达式中可链式：`a[i++]` 合法；`++++x` **不**合法（双前缀需括号 `++(++x)`，且通常无意义）。
+- 在表达式中可链式：`a[i++]` 合法。
 - 浮点数**不支持** `++`/`--`（编译错误）。
 
 ### 3.3 二元表达式
@@ -1389,7 +1402,7 @@ let result = match x {
 **语义**：
 - 自上而下匹配第一个成功的分支。
 - 所有分支表达式必须返回相同类型（或 union）。
-- **穷尽性**：编译器**不强制**穷尽匹配；运行时无匹配抛 `XR_ERR_RUNTIME`。
+- **穷举性**：对 enum 变量（ADT 与简单枚举）编译器强制穷举。对其他表达式不强制，运行时无匹配抛 `Exception(E0442)`。
 - 模式详见 [§6](#6-模式-patterns)。
 
 ### 3.14 `new`
@@ -1485,7 +1498,7 @@ if (x > 0) {
 
 **约束**：
 - 条件**必须**用括号包裹（与 Go/Rust 不同）。
-- 条件必须是 `bool`（不接受 truthy/falsy 隐式转换）。
+- 条件按 truthy/falsy 上下文求值（见 §2.3.3）；推荐使用显式 `bool` 表达式或 `x != null` / `x is T` 等比较以提高可读性。
 - 分支体必须是块 `{...}`，**不允许**单语句省略括号。
 - `if` 不是表达式；要表达式形式用三元 `? :` 或 `match`。
 
@@ -1624,7 +1637,7 @@ ReturnValue ::= Expression | '(' Expression (',' Expression)+ ')'
 ```
 
 ```xray
-return                 // 隐式返回 void
+return                 // 隐式返回 ()（Unit）
 return 42
 return (a, b)          // 多返回值，必须用括号包裹元组
 ```
@@ -1816,24 +1829,24 @@ fn add(a: int, b: int) -> int {
     return a + b
 }
 
-fn greet(name: string) -> void {       // 显式 void
+fn greet(name: string) -> () {         // 显式 Unit
     println("Hi ${name}")
 }
 
-fn echo(x: int) {                    // 省略返回类型 = void
+fn echo(x: int) {                       // 省略返回类型 = ()
     println(x)
 }
 ```
 
 **关键**：
 - 参数**必须**带类型标注（与箭头函数一致）。
-- 返回类型省略 = `void`；推荐显式标注以增强可读性。
+- 返回类型省略 = `()`（Unit）；推荐显式标注以增强可读性。
 - 函数体必须是块。
 
 #### 5.2.2 默认参数值
 
 ```xray
-fn connect(host: string, port: int = 8080, tls: bool = false) -> void { ... }
+fn connect(host: string, port: int = 8080, tls: bool = false) -> () { ... }
 
 connect("localhost")              // port=8080, tls=false
 connect("localhost", 443)         // tls=false
@@ -1869,7 +1882,7 @@ fn length_sq(v: in Vec2) -> float {
     return v.x * v.x + v.y * v.y
 }
 
-fn translate(v: ref Vec2, dx: float, dy: float) -> void {
+fn translate(v: ref Vec2, dx: float, dy: float) -> () {
     // v 是可变引用（修改对调用方可见）
     v.x += dx
     v.y += dy
@@ -1919,6 +1932,21 @@ fn factorial(n: int, acc: int = 1) -> int {
     return factorial(n - 1, acc * n)     // 尾调用：自动优化为循环
 }
 ```
+
+#### 5.2.8 程序入口
+
+xray **没有隐式 `main` 入口**：脚本/模块从顶层开始顺序执行，遇到 `fn` 声明被提升注册，遇到表达式或语句被立即执行。
+
+```xray
+// hello.xr
+print("loading")          // 顶层语句，立即执行
+fn greet() { print("hi") }
+greet()                   // 必须显式调用
+```
+
+- `fn main()` 没有任何特殊含义；如需手动调用，写 `main()`。
+- 顶层不允许 `return`（编译错误 `E0306`）。
+- 多文件项目的入口由 `xray.toml` 的 `entry` 字段指定，对应文件按上述脚本规则执行。
 
 ### 5.3 `class` 声明
 
@@ -2158,9 +2186,9 @@ interface Shape {
     perimeter() -> float
 }
 
-// 接口方法返回类型可省略（默认 void）
+// 接口方法返回类型可省略（默认 ()）
 interface Greeter {
-    greet(name: string)             // 等价于 greet(name: string) -> void
+    greet(name: string)             // 等价于 greet(name: string) -> ()
     log()                           // 无参无返回
 }
 
@@ -2191,7 +2219,7 @@ fn describe(s: Shape) -> string {
 - 接口可继承其他接口（`extends`）；支持泛型 `interface Container<T>` 与受约束 `interface Stats<T: Numeric>`。
 - 类 / struct 用 `implements I1, I2, ...` 声明实现一个或多个接口（**显式**，不存在隐式实现）。
 - 实现类**必须**提供所有接口成员（方法同名同参同返回；属性同名同类型）。
-- 接口方法声明中的**返回类型可省略**（默认 `void`）。
+- 接口方法声明中的**返回类型可省略**（默认 `()`）。
 - 接口方法默认 `abstract`（无方法体）。
 - 接口可声明**属性签名**（`length: int`、`const id: int`）；实现类必须有相应字段。
 - 实现类可以提供额外的方法（接口仅定义最小集）。
@@ -2553,7 +2581,7 @@ match (msg) {
 `match` 一个 ADT enum 时，编译器执行**穷举性分析**：
 
 - 若所有变体都被覆盖（含 `_` 兜底），通过
-- 若漏写某变体，编译报错 `E0823 XR_ERR_MATCH_NOT_EXHAUSTIVE`，并提示缺失的变体名
+- 若漏写某变体，编译报错 `E0371 XR_ERR_ANALYZE_MATCH_NOT_EXHAUSTIVE`，并提示缺失的变体名
 
 ```xray
 enum NetEvent {
@@ -2566,11 +2594,11 @@ enum NetEvent {
 match (event) {
     NetEvent.Connected            -> "ok",
     NetEvent.Disconnected(r)      -> "down: ${r}",
-    // ❌ E0823: 缺失变体 DataReceived 和 Error；可加 `_ -> ...` 兜底
+    // ❌ E0371: 缺失变体 DataReceived 和 Error；可加 `_ -> ...` 兜底
 }
 ```
 
-> 简单枚举（无 payload，类似 C 风格）当前**不**强制穷举（与历史行为一致），但建议总是提供 `_` 兜底。ADT enum **强制**穷举。
+> 简单枚举（无 payload）与 ADT enum 均**强制**穷举；只要包含 `_` 兜底分支即可跳过检查。对非 enum 变量（如 `int`）不强制。
 
 ### 6.4 类型模式 `is T`
 
@@ -2595,7 +2623,7 @@ match (x) {
 }
 ```
 
-- 守卫表达式位于 `if (...)` 括号内，必须返回 `bool`。
+- 守卫表达式位于 `if (...)` 括号内，按 truthy/falsy 上下文求值（见 §2.3.3，与 `if` / `while` 一致）；推荐显式使用 `bool` 表达式以提高可读性。
 - 失败时继续尝试下一分支。
 
 ### 6.6 多值模式
@@ -2638,10 +2666,10 @@ let { name, age } = user
 
 详见 §5.1.5。`match` 中的对象/数组结构解构 **TBD**。
 
-### 6.10 穷尽性与匹配失败
+### 6.10 穷举性与匹配失败
 
-- 编译器**不强制**穷尽匹配。
-- 运行时无分支匹配 → 抛 `XR_ERR_RUNTIME` (`E0440`)。
+- 对 enum 表达式的 `match` 强制穷举（错误码 `E0371`，见 §6.3.3）。
+- 其他类型不强制；运行时无分支匹配 → 抛 `Exception` 错误码 `E0442`（见 §18.x）。
 - 建议总是提供 `_` 兜底。
 
 ---
@@ -3319,7 +3347,7 @@ fn loadConfig(path: string) -> Result<Config, ConfigError> {
     return parseConfig(text)
 }
 
-// 顶层：异常 catch 兜底
+// 顶层：异常 catch 兜底（必须显式调用，没有自动 main）
 fn main() {
     try {
         let cfg = loadConfig("app.toml").unwrap()
@@ -3332,6 +3360,8 @@ fn main() {
         exit(2)
     }
 }
+
+main()                                     // 显式调用入口
 ```
 
 #### 模式 2：异常块凝结成 Result（用于 RPC / 序列化）
@@ -3486,14 +3516,14 @@ let result = identity<float>(0)            // 0 默认 int，强制 float
 xray 的接口实现需**显式 `implements`**——这与 Go 的"隐式接口实现"不同。
 
 ```xray
-interface Drawable { draw() -> void }
+interface Drawable { draw() -> () }
 
 class Square implements Drawable {        // 必须显式 implements
-    draw() -> void { ... }
+    draw() -> () { ... }
 }
 
 class Wrong {
-    draw() -> void { ... }
+    draw() -> () { ... }
 }
 
 fn render(d: Drawable) { ... }
@@ -3587,7 +3617,7 @@ let task = go fn(d: Json) -> int {
 ```
 
 **语义**：
-- 每个 `go` 表达式都返回一个 `Task<T>`，其中 `T` 是被调函数的返回类型；`void` 函数返回 `Task<null>`。
+- 每个 `go` 表达式都返回一个 `Task<T>`，其中 `T` 是被调函数的返回类型；返回 `()` 的函数对应 `Task<null>`。
 - 协程在闲置 worker 线程中调度（M:N）。
 - 协程内**未捕获**异常存在 `Task` 中，由 `await` 时重抛。
 - 普通局部变量（非 `shared`、非 `move`）传给 `go` 时**自动深拷贝**；`shared const` 零拷贝共享；`shared let` 必须 `move`。
@@ -3642,7 +3672,7 @@ let firstOk = await anySuccess [t1, t2, t3]
 | `t.cancelled` | `bool`（属性） | 任务是否被取消过 |
 | `t.result` | `Json`（属性） | 任务返回值；未完成或失败时为 `null` |
 | `t.error` | `string?`（属性） | 任务的异常消息；未失败时为 `null` |
-| `t.cancel()` | `() -> void` | 请求取消任务（合作式） |
+| `t.cancel()` | `() -> ()` | 请求取消任务（合作式） |
 
 ```xray
 let t = go fetch(url)
@@ -3674,13 +3704,13 @@ shared const cha = new Channel(3)          // 元素类型从首次 send 推断
 
 | 方法 | 签名 | 行为 |
 |--|--|--|
-| `send(v)` | `(T) -> void` | 阻塞发送；满则等待消费者；channel 已关闭时抛异常 |
+| `send(v)` | `(T) -> ()` | 阻塞发送；满则等待消费者；channel 已关闭时抛异常 |
 | `recv()` | `() -> T` | 阻塞接收；空则等待生产者；channel 已关闭且缓冲为空时抛异常 |
 | `trySend(v)` | `(T) -> bool` | 非阻塞：成功返回 `true`，满或已关闭返回 `false` |
 | `tryRecv()` | `() -> (T, bool)` | 非阻塞，返回**多值**：`(value, ok)`；空或已关闭时 `ok=false` |
 | `sendTimeout(v, ms)` | `(T, int) -> bool` | 带超时发送；超时返回 `false` |
 | `recvTimeout(ms)` | `(int) -> (T, bool)` | 带超时接收；超时返回 `ok=false` |
-| `close()` | `() -> void` | 关闭 channel；幂等 |
+| `close()` | `() -> ()` | 关闭 channel；幂等 |
 | `closed` | `bool`（属性） | channel 是否已关闭 |
 
 ```xray
@@ -4137,9 +4167,9 @@ fn oldAPI() { ... }
 
 | 函数 | 签名 | 说明 |
 |--|--|--|
-| `print` | `(...args: any) -> void` | 输出到 stdout，**自动追加换行**；多参以空格分隔 |
-| `println` | `(...args: any) -> void` | 同 `print` 的兼容别名 |
-| `dump` | `(value: any, ...) -> void` | 结构化调试输出（含类型与缩进） |
+| `print` | `(...args: any) -> ()` | 输出到 stdout，**自动追加换行**；多参以空格分隔 |
+| `println` | `(...args: any) -> ()` | 同 `print` 的兼容别名 |
+| `dump` | `(value: any, ...) -> ()` | 结构化调试输出（含类型与缩进） |
 
 > stdlib 不内置 `eprint` / `eprintln`；若需输出 stderr，使用 `io.stderr.write(...)`（`io` 模块）。
 
@@ -4182,7 +4212,7 @@ print(typeof(x) == Type.int)    // true
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| `sleep(ms)` | `(int) -> void` | 让出当前协程指定毫秒数（不阻塞 OS 线程） |
+| `sleep(ms)` | `(int) -> ()` | 让出当前协程指定毫秒数（不阻塞 OS 线程） |
 | `spawn(fn)` | `(fn) -> Task` | 启动一个协程（等价 `go fn()`，函数式风格） |
 
 ### 13.5 断言（测试用）
@@ -4191,12 +4221,12 @@ print(typeof(x) == Type.int)    // true
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| `assert(cond, msg?)` | `(bool, string?) -> void` | `cond` 为 false 时抛异常 |
-| `assert_eq(a, b)` | `(T, T) -> void` | `a == b`；失败时输出两值 |
-| `assert_ne(a, b)` | `(T, T) -> void` | `a != b` |
-| `assert_true(cond)` | `(bool) -> void` | 等价 `assert(cond)` |
-| `assert_false(cond)` | `(bool) -> void` | 等价 `assert(!cond)` |
-| `assert_throws(fn)` | `(fn) -> void` | 期望 `fn()` 抛异常 |
+| `assert(cond, msg?)` | `(bool, string?) -> ()` | `cond` 为 false 时抛异常 |
+| `assert_eq(a, b)` | `(T, T) -> ()` | `a == b`；失败时输出两值 |
+| `assert_ne(a, b)` | `(T, T) -> ()` | `a != b` |
+| `assert_true(cond)` | `(bool) -> ()` | 等价 `assert(cond)` |
+| `assert_false(cond)` | `(bool) -> ()` | 等价 `assert(!cond)` |
+| `assert_throws(fn)` | `(fn) -> ()` | 期望 `fn()` 抛异常 |
 
 ### 13.6 容器构造
 
@@ -4941,7 +4971,7 @@ Bytecode  →  AOT (machine code)
 | `E0820` | `XR_ERR_THROW_NOT_EXCEPTION` | `throw` 操作数静态类型不是 `Exception` 派生 |
 | `E0821` | `XR_ERR_TRY_BANG_BAD_OPERAND` | `try!` 操作数不是 `Result<T,E>` 或 `T?` |
 | `E0822` | `XR_ERR_TRY_BANG_NON_EXCEPTION_ERR` | `try!` 跨轨升级时 `E` 不是 `Exception` 派生 |
-| `E0823` | `XR_ERR_MATCH_NOT_EXHAUSTIVE` | ADT enum 的 `match` 缺少变体覆盖且无 `_` 兜底 |
+| `E0823` | `XR_ERR_MATCH_NOT_EXHAUSTIVE` | 已合并到 `E0371`（见 §6.3.3）；代码仅保留在错误码表中以免重复分配 |
 | `E0824` | `XR_ERR_UNWRAP_NON_EXCEPTION_ERR` | `Result<T, E>.unwrap()` 中 `E` 不是 `Exception` 派生 |
 
 ### 18.8 错误对象结构
