@@ -26,6 +26,7 @@
   bash scripts/check_architecture.sh
   bash scripts/check_comment_rules.sh
   ```
+- **2026-05-21 复测补充**：本次 MCP registry 重构期间复跑架构检查，已修复 `scripts/check_architecture.sh` 缺少可执行位导致直接运行 `permission denied` 的问题；脚本进入检查逻辑后仍返回 4 errors / 44 warnings。当前主要失败项包括：`src/ir/xi_lower_expr.c` 超过 `.c` 行数限制、`src/ir/xi.h` 超过 `.h` 行数限制、11 处直接 `malloc/free/calloc/realloc` 调用、`base/ → runtime/` upward include。上述失败项为既有全局架构债务，影响范围超出本次 MCP registry 改动，需单独拆分治理。
 
 ### 2026-05-20 — Exception subclass instance crashes when assigned to variable
 
