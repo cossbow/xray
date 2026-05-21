@@ -26,9 +26,9 @@ MCP 重构不提供迁移期，不保留旧行为。
 | server 全局 `current_progress_token` | per-request context | 直接替换 |
 | 手动 `has_tools/has_resources/has_prompts` | registry 自动推导 capabilities | 删除手动 flag |
 | tool 参数在 handler 内零散校验 | schema + request validator 统一校验 | handler 只处理已验证参数 |
-| `xray_check` 只做 parser 检查却声明 type check | 真正 parser + analyzer 诊断 | 直接修正语义 |
+| `xray_check` 只做 parser 检查却声明 type check | 真正 parser + analyzer 诊断 | 直接修正语义（合并为 `xray_analyze`） |
 | `xray_diagnostics` 与 `xray_check` 重复 | 合并为结构化 `xray_analyze` | 删除重复 tool |
-| 静态手写 knowledge 大字符串 | spec/stdlib 元数据生成 | 生成文件替代手写表 |
+| 静态手写 knowledge 拼接字符串 | 结构体数组 + ranked search | 第一步手写但结构化，后续考虑生成脚本 |
 | `xray_run` 同进程执行 | 隔离 runner | 删除不安全执行路径 |
 | prompt 中旧语法示例 | 当前语法单一真相源 | 旧 prompt 全部改写 |
 
@@ -38,54 +38,58 @@ MCP 重构不提供迁移期，不保留旧行为。
 
 ### 3.1 协议层
 
-- stdio transport 复用了 Content-Length framing，更像 LSP/DAP transport，不应作为 MCP 最终实现。
-- `initialize` 没有严格处理重复初始化、协议版本、client capabilities。
-- JSON-RPC request validation 不完整：缺少 `jsonrpc == "2.0"`、`id` 类型、`params` 类型、batch policy 等校验。
-- `notifications/cancelled` 当前没有真正取消正在执行的 tool。
-- progress token 存在 server 全局状态里，不适合未来并发或嵌套调用。
+- ~~stdio transport 复用了 Content-Length framing~~ 已完成：NDJSON。
+- ~~`initialize` 没有严格处理重复初始化~~ 已完成：三态 lifecycle。
+- ~~JSON-RPC request validation 不完整~~ 已完成：`xmcp_jsonrpc_validate_message`。
+- `notifications/cancelled` 当前 silently ignored。顺序 dispatch 模型下抢占式取消不可实现，但该 handler 应记录 debug 日志明示 no-op 语义，不该假装处理了。
+- progress token 仍存在 `XmcpServer` 全局字段 `current_progress_token`，该改为 per-call 参数（§5.4）。
 
 ### 3.2 工具层
 
-- `xray_check` 描述包含 type check，但实现主要是 parser diagnostics。
-- `xray_diagnostics` 与 `xray_check` 功能重复，只是输出 Markdown table。
-- `xray_format` 与 CLI formatter 配置不完全一致。
-- `xray_run` 同进程执行用户代码，没有超时、隔离、模块权限、stderr 捕获和取消支持。
-- tool result 以文本为主，缺少稳定的 `structuredContent` 和 `outputSchema`。
+- ~~`xray_check` / `xray_diagnostics` 重复~~ 已完成：合并为 `xray_analyze`。
+- ~~tool result 缺少 `structuredContent` / `outputSchema`~~ 大部已完成（`xray_analyze`/`xray_format`/三个 knowledge tool）；`xray_run` 还未出 structured。
+- `xray_format` 语法错误路径返回纯 text 错误，该返回 structured diagnostics。
+- `xray_run` 同进程执行但：
+  - dup2 **全局 stdout** 捕获输出 → 会污染 MCP 响应流（bug）。
+  - `xray_isolate_setup_full` 全部 stdlib 启用 → 含 net/io/os/process/cluster，违反“危险模块策略必须显式”。
+  - 无 timeout → 可能永久阻塞顺序 dispatch。
+  - 无 structured output / outputSchema。
+- `xmcp_make_error_result` 被用来包装“调用错误”（缺参/未知 tool），违反 §11 分层：这些应该是 JSON-RPC `invalid params`，不是 tool result。
 
 ### 3.3 知识库与 prompts
 
-- knowledge 是手写 C 字符串，语言规范和 stdlib 改动后容易漂移。
-- stdlib 只有模块级描述，缺少函数级签名、参数、返回值、示例和安全说明。
-- prompts 中仍可能出现旧语法示例，会误导 AI 生成过时代码。
+- knowledge 仍以拼接 `char[]` 形式存在 `xmcp_knowledge.c`（近 900 行），是语言规范漂移的头号源头。
+- `xray_stdlib_search` 返回拼接 markdown，不是结构化 matches。
+- topic 枚举在 `tool_xray_syntax_lookup` 错误信息里被硬编码为字符串，不从数据表迭代。
+- prompts 示例未进入 parser smoke test，可能含过时语法。
 
 ### 3.4 测试层
 
-- 现有单测覆盖 registry/schema/静态返回较多，但缺少真实 stdio 协议端到端测试。
-- 缺少 `xray_run` 超时、取消、输出截断、安全限制测试。
+- ~~缺少真实 stdio 协议端到端测试~~ 部分完成（lifecycle、schema、structured output）。
+- 缺少重复 initialize / parse error / notification 无 response 的 e2e。
+- 缺少 `xray_run` 超时、输出截断、stdlib 白名单测试（功能未实现）。
 - 缺少 knowledge/prompt 语法示例可解析的回归测试。
 
 ## 4. 目标架构
 
 ### 4.1 模块布局
 
-建议重排为以下结构：
+目标结构：
 
 ```text
 src/app/mcp/
-  xmcp_main.c                 # CLI entry and option parsing
   xmcp_server.c/.h            # server lifecycle and request loop
   xmcp_transport_stdio.c/.h   # MCP stdio NDJSON transport only
   xmcp_jsonrpc.c/.h           # JSON-RPC validation, response, error helpers
-  xmcp_context.c/.h           # per-request context, cancellation, progress
+  xmcp_protocol.c/.h          # initialize / capabilities
   xmcp_registry.c/.h          # tools/resources/prompts registry
-  xmcp_schema.c/.h            # minimal JSON schema builders and validators
-  xmcp_tools_core.c           # analyze, format
-  xmcp_tools_runner.c         # run toolset, isolated execution
-  xmcp_tools_knowledge.c      # doc lookup, stdlib lookup
+  xmcp_tools.c/.h             # all tool schemas + handlers + dispatch
   xmcp_resources.c/.h         # resources and templates
   xmcp_prompts.c/.h           # prompt registry and handlers
-  xmcp_knowledge_generated.c/.h
+  xmcp_knowledge.c/.h         # structured language/stdlib metadata + search
 ```
+
+关于 `xmcp_tools.c` 是否拆分：当前所有 tool 共享 schema builder、structured-result helper、参数校验路径，统一在一个文件里维护内聚度高。文件超过 2000 行（红线 3000）再按 `internal helpers / table / handlers` 维度拆。**不**按 toolset 拆 `_core/_runner/_knowledge`，那会强制重复 helper。
 
 架构约束：
 
@@ -102,9 +106,9 @@ stdin line
   -> transport decode
   -> JSON parse
   -> JSON-RPC validate
-  -> XmcpRequestContext create
   -> method dispatch
-  -> handler result/error
+  -> tool argument validate (centralized, schema-driven)
+  -> handler with optional XmcpCallContext (progress_token)
   -> response encode
   -> stdout line
 ```
@@ -113,9 +117,9 @@ stdin line
 
 - transport 只负责字节流和消息边界，不理解 MCP method。
 - JSON-RPC 层只负责 request/notification/response 语义。
-- MCP method 层只处理 MCP 协议对象。
-- tool handler 只接收已验证参数，不再重复猜测 JSON 类型。
-- cancellation notification 走抢占路径，不排队等待慢 tool 完成。
+- MCP method 层只处理 MCP 协议对象，不再持有任何 per-request 状态。
+- tool handler 只接收已验证参数，不重复猜测 JSON 类型。
+- 顺序 dispatch 模型，详见 §5.5。
 
 ## 5. 协议设计
 
@@ -150,25 +154,44 @@ stdin line
 - `ready` 后再次 `initialize` 返回 already initialized error。
 - 除 `initialize`、`ping`、必要 notification 外，其他 request 在 `ready` 前全部拒绝。
 
-### 5.4 cancellation 与 progress
+### 5.4 progress 参数化
 
-新增 `XmcpRequestContext`：
+progress token 不挂在 `XmcpServer` 上，而是 per-call 局部传递：
 
-```text
-request_id
-method
-progress_token
-cancelled
-server
-scratch_arena
+```c
+typedef struct XmcpCallContext {
+    int64_t progress_token;  /* -1 means no progress requested */
+} XmcpCallContext;
+
+typedef XrJsonValue *(*XmcpToolHandler)(XmcpServer *server,
+                                        const XmcpCallContext *ctx,
+                                        XrJsonValue *arguments);
 ```
 
 规则：
 
-- 每个 request 独立保存 progress token。
-- `notifications/cancelled` 按 request id 标记 context cancelled。
-- 长任务必须在阶段边界检查 cancellation。
-- progress notification 只从 request context 发出，不允许读写 server 全局 progress 字段。
+- `tools/call` 在 dispatch 时从 `params._meta.progressToken` 提取，构造栈上 `XmcpCallContext` 传给 handler。
+- handler 通过 `xmcp_send_progress_notification(server, ctx->progress_token, ...)` 发送进度。
+- `XmcpServer` 不再保存 `current_progress_token` 字段。
+- 不引入 `request_id`、`cancelled`、`scratch_arena` 等更复杂状态——这些字段在当前顺序 dispatch 模型下没有真正意义（见 §5.5）。
+
+### 5.5 dispatch 模型与 cancellation
+
+stdio MCP 采用顺序 dispatch：read stdin → parse → validate → handle → write stdout，单线程一条流水线。
+
+含义：
+
+- 同一时刻只有一个 in-flight request。
+- `notifications/cancelled` 在当前 dispatch 完成前无法被读取，因此**抢占式取消不可实现**。
+- 长任务（runner、analyze 大文件）会阻塞所有后续请求；用 timeout 限制最坏阻塞时间（见 §7.3）。
+- `notifications/cancelled` handler 不返回错误，但记录 debug 日志说明 cancel 在顺序模型下是 no-op。
+
+这是**显式的简单性选择**。未来如需支持并发：
+
+- 引入 worker pool / async runtime。
+- 把当前 `XmcpCallContext` 升级为完整 `XmcpRequestContext`（含 `request_id`、`cancelled` flag、`scratch_arena`）。
+- 主线程 dispatch 仅做 transport + 验证，把 handler 派发给 worker 并维护 in-flight 表，cancel 通过原子 flag 抢占。
+- 当前不预留任何这类 hook，避免过早抽象。
 
 ## 6. Registry 设计
 
@@ -207,21 +230,23 @@ capabilities 从 registry 自动生成：
 
 | Toolset | 默认 | 内容 |
 |---|---:|---|
-| `core` | 是 | analyze、format |
-| `knowledge` | 是 | doc lookup、stdlib lookup |
-| `project` | 是 | project info、resource read |
-| `runner` | 否 | run |
+| `core` | 是 | `xray_analyze`、`xray_format` |
+| `knowledge` | 是 | `xray_syntax_lookup`、`xray_stdlib_search`、`xray_definition` |
+| `runner` | 否 | `xray_run` |
 
-`runner` 默认不启用，因为它执行用户代码。用户需要通过 CLI 显式启用。
+`runner` 默认不启用，因为它执行用户代码。
 
-CLI 建议：
+关于 "project" toolset：先前草案里包含的 "project info / resource read" 不属于 tool——`resources/read` 是 MCP 独立 method，`project info` 还没具体设计。删除该分组，避免占位。
+
+CLI：
 
 ```text
-xray mcp-server --toolsets=core,knowledge,project
-xray mcp-server --toolsets=core,knowledge,project,runner --run-timeout-ms=3000
+xray mcp-server                                       # core + knowledge
+xray mcp-server --enable-runner                       # + runner
+xray mcp-server --enable-runner --run-timeout-ms=3000 # custom timeout (see §7.3)
 ```
 
-不保留旧开关语义；命令行参数以最终设计为准。
+CLI 暂用 `--enable-runner` 单 flag，未来若新增 toolset 再升级为 `--toolsets=...`。
 
 ## 7. Tool 设计
 
@@ -286,78 +311,89 @@ source
 
 ### 7.3 `xray_run`
 
-只属于 `runner` toolset。
+只属于 `runner` toolset，默认关闭。
 
 输入：
 
 - `code: string`
-- `args?: string[]`
-- `timeoutMs?: int`
-- `stdin?: string`
+- `timeoutMs?: int`（默认 3000，最大 30000）
 
-输出：
+输出（structured）：
 
-- `exitCode`
-- `stdout`
-- `stderr`
-- `timedOut`
-- `cancelled`
-- `truncated`
+- `ok: bool`
+- `exitCode: int`
+- `stdout: string`
+- `timedOut: bool`
+- `truncated: bool`
+- `outputBytes: int`
 
 实现要求：
 
-- 不再同进程直接执行用户代码。
-- 使用隔离子进程或专用 worker。
-- 默认 timeout，例如 3000ms。
-- stdout/stderr 都有上限，例如各 64 KiB。
-- cancellation 必须能终止 runner。
-- 网络、文件系统、危险 stdlib 模块的策略必须显式，不靠默认开放。
+- **同进程 + 一次性 isolate**：每次调用 `xray_isolate_new` 创建新 isolate，调用结束销毁。同进程是显式选择，xray 当前没有 IPC 框架，子进程会和 stdio MCP 抢 stdin/stdout，工程成本远高于收益。
+- **stdlib 白名单**：runner isolate **不**调用 `xray_isolate_setup_full`。默认只启用 `print/json/math/string` 等纯计算 stdlib，**不**启用 `net/io/os/process/cluster`。如需放开，必须新增显式 CLI flag（先不实现）。
+- **stdout 隔离**：用 isolate 自带 stdout 重定向 API（或临时替换 isolate 内 stdout），**绝不 dup2 全局 stdout**——MCP 协议响应流必须保持纯净。
+- **wall-clock timeout**：进入 `xray_isolate_dostring` 前记录 deadline，VM 在循环边界协作式检查（需要 `xr_vm_check_deadline`）。超时后回收 isolate，返回 `timedOut=true`。
+- **stderr 不返回**：runner 出错通过 `exitCode != 0` + `stdout` 末尾追加 error 文本表达，简化输出契约。
+- **不实现 cancel**：受 §5.5 顺序模型限制，notification/cancelled 抢占不可行。
+- **stdout 上限**：默认 8 KiB（保持 MCP 响应紧凑；运行长输出的场景应该用 CLI `xray run`，不是 MCP）。超出 truncated=true。
 
-### 7.4 `xray_doc_lookup`
+### 7.4 `xray_syntax_lookup`
 
-替代旧的 syntax lookup 和 definition 文档查询。
+输入：
+
+- `topic: string`（如 `class`、`channel`、`coroutine`）
+
+输出（structured）：
+
+- `topic: string`
+- `found: bool`
+- `content: string`（markdown body）
+
+要求：
+
+- topic 集合从结构化数据表（§10）枚举，错误信息列出真实可用 topic 而非硬编码字符串。
+
+### 7.5 `xray_stdlib_search`
 
 输入：
 
 - `query: string`
-- `kind?: "syntax" | "stdlib" | "symbol" | "all"`
+- `module?: string`（可选过滤）
 
-输出：
+输出（structured）：
 
-- ranked matches
-- title
-- kind
-- summary
-- markdown body
-- examples
+- `query: string`
+- `module: string?`
+- `matchCount: int`
+- `matches: array<StdlibMatch>`
+  - `module: string`
+  - `summary: string`
+  - `score: number`（用于 ranking）
 
 要求：
 
-- 不只返回第一个模糊匹配。
-- query 太短时返回候选提示，不做噪声匹配。
-- 所有示例必须通过语法 smoke test。
+- 返回 ranked `matches` 数组而不是拼接 markdown。MCP client 可自行渲染。
+- query 太短（< 2 字符）时返回 `matchCount=0` 而不是噪声匹配。
+- stdlib 索引最终从 analyzer builtin 元数据生成（§10）；先从结构体数组手写。
 
-### 7.5 `xray_stdlib_lookup`
+### 7.6 `xray_definition`
+
+综合查询：先查语法 topic，再查 stdlib symbol。
 
 输入：
 
-- `module?: string`
-- `symbol?: string`
-- `query?: string`
+- `symbol: string`
 
-输出：
+输出（structured）：
 
-- module description
-- symbol signature
-- params
-- return type
-- examples
-- safety notes
+- `symbol: string`
+- `kind: "syntax" | "stdlib" | "none"`
+- `found: bool`
+- `content: string`
 
 要求：
 
-- stdlib 索引从真实 builtin/module 元数据生成。
-- 函数签名必须和 analyzer builtin 表一致。
+- `kind` 显式表达定义来源，便于 client 区分跳转目标。
 
 ## 8. Resources 设计
 
@@ -398,59 +434,73 @@ source
 - prompt 不复制大段静态知识；需要知识时引用 generated knowledge 的摘要。
 - 如果 MCP 当前 message role 不支持 `system`，则把系统指令作为第一条 user message 的明确 instruction，不伪造不被协议接受的 role。
 
-## 10. Knowledge 生成化
+## 10. Knowledge 结构化与生成化
 
-最终状态：`xmcp_knowledge_generated.c/.h` 是生成物，手写源数据不在 C 文件里维护。
+分两步进，避免一步到位成本过高：
 
-生成来源：
+### 第一步：手写但结构化
 
-- language topic metadata
-- stdlib module metadata
-- builtin signature metadata
-- examples metadata
+- 把 `TOPIC_*[]` / `STDLIB_LIST[]` 等拼接 `char[]` 重写为结构体数组：
+  ```c
+  typedef struct XmcpTopicEntry {
+      const char *id;
+      const char *title;
+      const char *summary;
+      const char *body;       /* markdown body */
+      const char *aliases[8]; /* NULL-terminated */
+  } XmcpTopicEntry;
 
-生成内容：
+  typedef struct XmcpStdlibEntry {
+      const char *module;
+      const char *summary;
+      const char *body;
+  } XmcpStdlibEntry;
+  ```
+- search 从拼接 markdown 改为返回 ranked `XmcpStdlibMatch[]`。
+- topic 枚举、"available topics" 错误提示从 `XmcpTopicEntry[]` 迭代生成。
+- search/ranking 逻辑住在 `xmcp_knowledge.c`，不与数据表混在一起。
 
-```text
-topic id
-title
-aliases
-summary
-markdown body
-examples
-stdlib module
-stdlib symbol
-signature
-params
-return type
-```
+### 第二步：生成化（后续）
 
-生成规则：
+- 新增构建脚本从语言规范 metadata + analyzer builtin metadata 生成 `xmcp_knowledge_generated.c`。
+- 生成脚本需要带测试，确保关键语法主题存在、stdlib symbol 签名与 analyzer builtin 表一致。
+- 手写部分限于 search/ranking 逻辑。
 
-- C 文件只包含数据表，不写复杂逻辑。
-- 搜索和 ranking 逻辑在手写 `xmcp_knowledge_search.c` 中。
-- 生成脚本必须有测试，确保关键语法主题存在。
-- stdlib symbol 签名必须与 analyzer builtin 输出一致。
+第一步不需要生成脚本也能消除拼接字符串漂移问题的一半；第二步可以在语言规范稳定后再启动。
 
 ## 11. 错误处理策略
 
-统一分两类错误：
+严格分两层：
 
-- JSON-RPC error：协议错误、method 错误、参数 schema 错误、资源不存在。
-- Tool result `isError=true`：工具执行成功但 Xray 代码本身有语法/语义/运行时错误。
+- **JSON-RPC error** (`error.code` + `error.message`)：协议层错误。包括 parse error、invalid request、method not found、invalid params（含 tool 名缺失 / 未知 tool / arguments 不是 object / required 参数缺失 / 参数类型错 / unknown resource URI）、internal error。
+- **Tool result `isError=true`**：handler 执行成功但业务语义上失败。包括：Xray 代码语法/语义/运行时错误、runner timeout、runner exit != 0。
 
-例子：
+具体场景表：
 
-| 场景 | 返回 |
-|---|---|
-| `tools/call` 缺少 `name` | JSON-RPC invalid params |
-| unknown tool | JSON-RPC invalid params |
-| `xray_analyze` 收到语法错误代码 | tool result，`isError=true`，含 diagnostics |
-| unknown resource URI | JSON-RPC invalid params |
-| runner timeout | tool result，`isError=true`，`timedOut=true` |
-| server 内部分配失败 | JSON-RPC internal error |
+| 场景 | 返回 | error code |
+|---|---|---|
+| malformed JSON | JSON-RPC error | `-32700` parse |
+| `jsonrpc != "2.0"` | JSON-RPC error | `-32600` invalid request |
+| `tools/call` 缺少 `name` | JSON-RPC error | `-32602` invalid params |
+| unknown tool name | JSON-RPC error | `-32602` invalid params |
+| `arguments` 不是 object | JSON-RPC error | `-32602` invalid params |
+| required 参数缺失 | JSON-RPC error | `-32602` invalid params |
+| 参数类型不匹配 schema | JSON-RPC error | `-32602` invalid params |
+| `resources/read` 缺 `uri` | JSON-RPC error | `-32602` invalid params |
+| `resources/read` unknown URI | JSON-RPC error | `-32602` invalid params |
+| ready 前调用非 initialize/ping | JSON-RPC error | `-32002` not initialized |
+| 重复 initialize | JSON-RPC error | `-32003` already initialized |
+| `xray_analyze` 收到语法错 | tool result | `isError=true` + diagnostics |
+| `xray_run` 超时 | tool result | `isError=true` + `timedOut=true` |
+| `xray_run` exit != 0 | tool result | `isError=true` + `exitCode` |
+| server 内部分配失败 | JSON-RPC error | `-32603` internal error |
 
-这样客户端能区分“调用 MCP 错了”和“Xray 程序有问题”。
+**关键区分**：客户端可通过响应是否含 `error` 字段区分“调用 MCP 错了”（需要修复调用代码）与“Xray 程序有问题”（需要修复被调代码）。
+
+**实现说明**：
+
+- `xmcp_validate_tool_arguments` 返回错误代码 + 人读信息，dispatch 层负责包装为 JSON-RPC error 响应。handler 只产生 tool result（成功或 isError）。
+- `tools/list`、`resources/list` 等查询接口不产生 tool result，出错一律走 JSON-RPC error。
 
 ## 12. 测试方案
 
@@ -472,10 +522,11 @@ return type
 覆盖：
 
 - `xray_analyze` 正确代码、语法错误、语义错误。
-- `xray_format` 正常格式化、checkOnly、语法错误。
-- `xray_doc_lookup` exact/alias/fuzzy/too-short query。
-- `xray_stdlib_lookup` module/symbol/signature。
-- `xray_run` 正常退出、非零退出、timeout、cancel、输出截断。
+- `xray_format` 正常格式化、语法错误返回 structured diagnostics。
+- `xray_syntax_lookup` exact match / alias / unknown topic。
+- `xray_stdlib_search` ranked matches / module 过滤 / too-short query。
+- `xray_definition` syntax kind / stdlib kind / none。
+- `xray_run` 正常退出、非零退出、timeout、输出截断；stdlib 白名单生效（调用 `net`/`os` 被拒绝）。
 
 ### 12.3 Knowledge 和 prompt 回归测试
 
@@ -490,9 +541,14 @@ return type
 覆盖：
 
 - runner 未启用时 `xray_run` 不在 tools/list。
-- runner timeout 后 server 仍可响应 ping。
-- runner cancel 后 server 仍可继续处理新 request。
+- runner timeout 后 server 仍可响应后续 request。
+- runner stdlib 白名单：调用被禁模块返回语义错误，不会造成隐藏副作用。
+- runner stdout 被 isolate 捕获，不污染 MCP 响应流。
 - 超大输入被拒绝且不导致内存失控。
+
+不覆盖（顺序模型下不适用）：
+
+- 抢占式 cancel——§5.5 明确声明不实现。
 
 ## 13. 实施批次
 
@@ -548,9 +604,12 @@ return type
 
 交付：
 
-- runner toolset 默认关闭。
-- 隔离执行。
-- timeout/cancel/output limit。
+- runner toolset 默认关闭（已完成）。
+- isolate 内部 stdout 捕获，不再 dup2 全局 stdout。
+- stdlib 白名单，默认关闭 `net/io/os/process/cluster`。
+- wall-clock timeout + `xr_vm_check_deadline` 协作检查。
+- structured output (`ok / exitCode / stdout / timedOut / truncated / outputBytes`) + outputSchema。
+- CLI `--run-timeout-ms`。
 - runner 安全测试。
 
 ## 14. 完成判定
@@ -559,13 +618,19 @@ MCP 重构完成必须同时满足：
 
 - `xray mcp-server` 可被主流 MCP 客户端通过 stdio 正常初始化和调用。
 - 不再存在 MCP Content-Length transport。
-- 初始化、错误、notification、cancel、progress 行为有端到端测试。
+- 初始化、错误、notification、progress 行为有端到端测试（cancel 不覆盖，§5.5）。
 - tools/list 只由 registry 产生，capabilities 只由 registry 推导。
 - `xray_analyze` 能返回 parser + analyzer structured diagnostics。
-- `xray_run` 不会无超时卡死 server。
-- knowledge 和 stdlib 索引不再靠手写 C 大字符串维护。
+- `xray_run` 受 timeout 保护不会无限阻塞 server；stdlib 限于白名单；stdout 不污染 MCP 响应。
+- knowledge 以结构体数组存储，`xray_stdlib_search` 返回 ranked matches。
 - prompt 示例全部符合当前 Xray 语法。
 - 完整 `ctest --output-on-failure` 通过。
+
+进阶目标（后续）：
+
+- knowledge 走到生成化第二步。
+- runner stdlib 重启用有显式 CLI flag 控制。
+- worker 模型补齐 cancel 与并发。
 
 ## 15. 后续维护原则
 
