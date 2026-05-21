@@ -680,9 +680,10 @@ if (cr == XR_CHAN_BLOCK) { f->state = N; return XR_VM_BLOCKED; }
 
 ```xray
 select {
-    msg from ch1 => { print(msg) }
-    100 to ch2 => { print("sent") }
-    after 1000 => { print("timeout") }
+    msg from ch1 -> { print(msg) }
+    100 to ch2 -> { print("sent") }
+    after 1000 -> { print("timeout") }
+    _ -> { print("idle") }
 }
 ```
 

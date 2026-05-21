@@ -90,14 +90,17 @@
 | 078 | [`078-repl-globals-unification.md`](078-repl-globals-unification.md) | REPL × top-level globals 统一化（删除 shared offset，dict 替代整型槽） | planned |
 | 079 | [`079-tuple-first-class.md`](079-tuple-first-class.md) | Tuple first-class 设计方案（圆括号路线，多返回值统一） | planned |
 | 080 | [`080-try-optional-expression.md`](080-try-optional-expression.md) | `try?` 表达式（异常折叠为 null，与 ?. ?? ! 形成完整容错链） | planned |
+| 081 | [`081-error-handling-redesign.md`](081-error-handling-redesign.md) | 错误处理重设计 | planned |
+| 082 | [`082-arrow-syntax-unification.md`](082-arrow-syntax-unification.md) | 箭头语法统一 | planned |
+| 083 | [`083-mcp-final-redesign.md`](083-mcp-final-redesign.md) | MCP Server 最终重构方案（不保留旧接口） | planned |
 
- **下一个编号**：081
+ **下一个编号**：084
 
 ## 新建任务
 
 ```bash
 # 取下一个编号，写新文档
-NEXT=081
+NEXT=084
 $EDITOR docs/tasks/${NEXT}-<short-name>.md
 # 编辑完后在本文件追加一行
 ```

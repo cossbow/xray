@@ -552,9 +552,9 @@ enum Color { Red, Green, Blue }
 ## Concurrency (core differentiator)
 let t = go someFunc(args)           // spawn coroutine
 let result = await t                // wait for result
-const ch = Channel(10)              // buffered channel (must be const)
+shared const ch = new Channel<int>(10)
 ch.send(val); let v = ch.recv()     // send/receive
-select { msg from ch => handle(msg); after 1000 => timeout() }
+select { msg from ch -> handle(msg); after 1000 -> timeout(); _ -> idle() }
 shared const CFG = {...}            // immutable cross-coroutine sharing
 go fn() { let d = move data }()    // ownership transfer
 

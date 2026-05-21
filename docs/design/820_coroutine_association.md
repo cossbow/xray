@@ -114,15 +114,15 @@ let t = go compute(42)
 let mon = t.monitor()
 
 select {
-    event from mon => {               // 复用现有 "msg from ch" 语法
+    event from mon -> {               // 复用现有 "msg from ch" 语法
         if (event.ok) {
             print("result: " + event.value)
         } else {
             print("error: " + event.error)
         }
     }
-    msg from data_ch => { ... }       // 其他 channel 照常
-    after 5000 => { ... }             // 超时照常
+    msg from data_ch -> { ... }       // 其他 channel 照常
+    after 5000 -> { ... }             // 超时照常
 }
 ```
 
@@ -379,7 +379,7 @@ if (link_mode == XR_LINK_MONITORED) {
 let task, mon = monitored go compute(42)
 
 select {
-    event from mon => { ... }
+    event from mon -> { ... }
 }
 ```
 
@@ -697,11 +697,11 @@ tests/regression/11_coroutine/1128_supervisor_error_collect.xr
 @test fn test_monitored_go() {
     let task, mon = monitored go { return 42 }
     select {
-        event from mon => {
+        event from mon -> {
             assert(event.ok == true)
             assert(event.value == 42)
         }
-        after 5000 => { throw new Exception("timeout") }
+        after 5000 -> { throw new Exception("timeout") }
     }
 }
 ```
@@ -739,15 +739,15 @@ tests/regression/11_coroutine/1128_supervisor_error_collect.xr
 **1126 monitor + select 混合**：
 ```javascript
 @test fn test_monitor_select() {
-    shared const data_ch = Channel(1)
+    shared const data_ch = new Channel<int>(1)
     let t = go { await Task.sleep(50); return 42 }
     let mon = t.monitor()
 
     data_ch.trySend(100)
 
     select {
-        event from mon => { print("task done: " + event.value) }
-        msg from data_ch => { print("data: " + msg) }
+        event from mon -> { print("task done: " + event.value) }
+        msg from data_ch -> { print("data: " + msg) }
     }
     // 由于 data_ch 立即可用，应先收到 data: 100
     // 第二次 select 收到 task done: 42

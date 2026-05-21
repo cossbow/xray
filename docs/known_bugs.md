@@ -6,6 +6,13 @@
 
 ---
 
+### 2026-05-21 — analyzer / LSP 内置 API 表与运行时导出存在漂移
+
+- **现象**：语言规范审计时发现若干 API 真值源不一致：`datetime` 的 `XR_DEFINE_BUILTIN` 同时列出模块工厂函数和 `DateTime` 实例成员，生成的 analyzer/LSP 表容易把实例成员误当成模块导出；`stdlib/types/channel.xr` 声明 `closed`，但运行时符号表和 VM 分派使用 `isClosed` / `isClosed()`；部分 native module（如 `cluster`、`ws`）的真实 `XRS_EXPORT` 与 analyzer/generated builtins 表不完全一致。
+- **root cause**：stdlib API 目前有多套声明源（`XR_DEFINE_BUILTIN`、`XRS_EXPORT`、`stdlib/types/*.xr`、手写 analyzer 补充表），缺少单一生成流程校验“运行时可调用 API”和“分析器/LSP 可见 API”一致性。
+- **影响**：运行时代码可能可调用，但 LSP/分析器补全、类型提示或文档索引缺失/误报；反之，也可能出现 analyzer 认为存在但运行时不可用的成员。
+- **复现方法**：运行审计脚本提取 `XR_DEFINE_BUILTIN`、`XRS_EXPORT`、`stdlib/types/*.xr` 和 `src/frontend/analyzer/xanalyzer_builtins_generated.h`，对比同一模块/类型的函数集合。
+
 ### 2026-05-12 — 本地架构/注释质量门禁存在既有失败项
 
 - **现象**：更新 `076-codegen-master-spec.md` 后执行本地质量门禁时，`bash scripts/check_architecture.sh` 返回 3 errors / 46 warnings；`bash scripts/check_comment_rules.sh` 返回 1 forbidden pattern。快速测试 `ctest --output-on-failure --test-dir build` 为 113/113 通过。
