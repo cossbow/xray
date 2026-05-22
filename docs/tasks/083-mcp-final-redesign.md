@@ -6,7 +6,7 @@
 
 ## 1. 结论
 
-当前 `src/app/mcp` 已经具备可运行基础：专用 NDJSON transport、JSON-RPC validation、registry 驱动的 tools/resources/prompts、generated knowledge、runner opt-in 和 MCP knowledge 回归测试均已落地。但它仍有协议 transcript、runner 沙盒测试、schema validator 和搜索排序等后续优化空间。
+当前 `src/app/mcp` 已经具备可运行基础：专用 NDJSON transport、JSON-RPC validation、registry 驱动的 tools/resources/prompts、generated knowledge、runner opt-in 和 MCP knowledge 回归测试均已落地。但它仍有协议 transcript、runner 沙盒细节、schema validator 深层结构和搜索排序等后续优化空间。
 
 本方案建议将 MCP server 作为一个独立、严格、可测试的 IDE/AI 集成子系统重写，目标是：
 
@@ -54,7 +54,7 @@ MCP 重构不提供迁移期，不保留旧行为。
 - `xray_format` 语法错误路径返回纯 text 错误，该返回 structured diagnostics。
 - ~~`xray_run` 会污染 MCP stdout、缺少 timeout/outputSchema~~ 已完成：isolate stdout 捕获、timeout、output limit、structured output 已落地。
 - `xray_run` 已有 unit-level 安全边界测试和 transcript 级 stdout 协议隔离测试；仍需更细粒度 allowlist 行为验证。
-- 部分 handler 参数错误仍通过 tool result 表达，后续应统一为 schema validator + JSON-RPC `invalid params`。
+- `tools/call` 参数错误已通过 schema validator 返回 JSON-RPC `invalid params`；后续可补 object / array 的浅层结构校验。
 
 ### 3.3 知识库与 prompts
 

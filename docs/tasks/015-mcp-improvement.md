@@ -95,14 +95,17 @@
 
 ### 3. 参数验证与错误分层
 
-部分 handler 仍然包含手动参数检查。后续应统一为轻量 schema validator。
+`tools/call` 已有轻量 schema validator，覆盖 required 字段、primitive type、string enum、integer range，并把这些协议参数错误返回为 JSON-RPC invalid params。
 
-建议支持：
+已覆盖：
 
 - required 字段。
 - primitive type。
 - enum。
 - integer range。
+
+仍建议支持：
+
 - object / array 的浅层结构。
 
 错误分层规则：
