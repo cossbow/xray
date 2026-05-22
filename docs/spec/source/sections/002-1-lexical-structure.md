@@ -369,30 +369,34 @@ let primes = #[2, 3, 5, 7]
 
 ## 1. Lexical Structure
 
-### 1.1 Encoding
+> Source of truth: `src/frontend/lexer/xlex.h` (token enum), `src/frontend/lexer/xkeywords.def` (keyword table, 63 entries), `src/frontend/lexer/xlex.c` (scanner implementation).
 
-Xray source files are UTF-8. The lexer treats strings, comments, and raw string bodies as UTF-8 byte sequences. Identifiers are currently ASCII-only.
+### 1.1 Character Encoding
 
-A UTF-8 BOM at the beginning of a file may be skipped by the scanner.
+Xray source files **must** be encoded as UTF-8. All source processing (string literals, identifiers, comments) treats input as a UTF-8 byte sequence; non-ASCII characters are allowed only inside string literals, comments, and raw strings (identifiers are currently ASCII-only; see §1.4).
+
+A UTF-8 BOM (`EF BB BF`) is optional; the scanner skips a leading BOM.
 
 ### 1.2 Line Endings and Whitespace
 
-Line endings are `\n` or `\r\n`. A bare `\r` is not a normal line terminator.
+Line endings recognize `\n` (Unix) and `\r\n` (Windows). A standalone `\r` is treated as an illegal character.
 
-Whitespace characters are space, horizontal tab, and line terminators. Whitespace separates tokens. In most locations it does not carry semantic meaning, but the parser may use token adjacency for a few disambiguations such as generic closing brackets.
+**Whitespace**: space (`U+0020`), horizontal tab (`U+0009`), and line terminators. Whitespace separates tokens and carries no semantics (**exception**: in generic contexts, splitting consecutive `>>` depends on whitespace context).
 
 ### 1.3 Comments
 
-Xray supports line comments and block comments:
+Xray supports two kinds of comments, **neither of which nests**:
 
 ```xray
-// line comment
-
-/* block comment
-   spanning multiple lines */
+// line comment, from // to end-of-line
+/* block comment,
+   may span lines;
+   does not nest: an inner /* does not start a new layer */
 ```
 
-Comments do not nest. Comments are collected as trivia for formatters/LSP but are not part of the AST semantics. Documentation comments such as `///` or `/** ... */` are conventions only.
+Comments may appear wherever whitespace is allowed. They are collected as **trivia** for formatters and LSP (see `src/frontend/parser/xtrivia.*`), but do not participate in syntactic analysis.
+
+Doc comments (no syntactic difference from ordinary comments): conventionally `///` or `/** */` for tooling. The compiler does not currently enforce this convention.
 
 ### 1.4 Identifiers
 
@@ -402,82 +406,154 @@ IdentStart ::= 'a'..'z' | 'A'..'Z' | '_'
 IdentCont  ::= IdentStart | '0'..'9'
 ```
 
-Identifiers are ASCII. A reserved keyword cannot be used as an identifier, except where the grammar explicitly treats it as a member name after `.`.
+ASCII only. The maximum length is bounded by the compiler (about 255 bytes).
 
-A single `_` is special:
+**Reservation rule**: identifiers cannot collide with reserved keywords (see §1.5); they **may** collide with **context-sensitive keywords** (such as `from`, `to`, `default`, `ref`, `move`, `linked`, `supervisor`, `after`).
 
-- Wildcard in patterns.
-- Discard marker in destructuring and selected loop positions.
-- Not a normal binding name.
+The character `_` is a **dedicated wildcard token**, not an ordinary identifier:
 
-Names such as `__tmp` are ordinary identifiers.
+- In `match` patterns it represents a **wildcard** (see §6.7).
+- In `for-in`, it can ignore the key or the value: `for (_, v in m) { ... }`.
+- In destructuring binding it can ignore positions: `let (a, _) = (1, 2)`.
+- It **cannot** appear as `let _ = expr`, as a function-parameter name, or as a referenced variable; the compiler reports "expected variable name".
+- Multi-underscore names (such as `__tmp`) are ordinary identifiers.
 
 ### 1.5 Keywords
 
-The lexer keyword table contains 63 reserved keywords. They include:
+Xray has **63 reserved keywords** in total; the authoritative source-of-truth table is in `src/frontend/lexer/xkeywords.def`. Keywords are grouped by purpose:
 
-| Group | Keywords |
+#### 1.5.1 Declarations and Control Flow
+
+| Keyword | Purpose |
 |--|--|
-| Declarations and flow | `let`, `const`, `shared`, `fn`, `return`, `if`, `else`, `while`, `for`, `in`, `break`, `continue`, `match` |
-| OOP and types | `class`, `struct`, `interface`, `enum`, `type`, `extends`, `implements`, `constructor`, `this`, `super`, `new`, `static`, `final`, `abstract`, `override`, `operator`, `is`, `as` |
-| Error handling | `try`, `catch`, `finally`, `throw` |
-| Modules | `import`, `export` |
-| Concurrency | `go`, `await`, `select`, `defer`, `scope` |
-| Primitive type names | `int`, `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`, `float`, `float32`, `float64`, `bool`, `string`, `unknown` |
-| Literal keywords | `true`, `false`, `null` |
+| `let` | mutable variable declaration |
+| `const` | immutable variable declaration |
+| `shared` | cross-coroutine shared modifier (combined with `const`/`let`) |
+| `fn` | function declaration |
+| `return` | function return |
+| `yield` | coroutine yield (statement form) |
+| `if` `else` | conditional branches |
+| `while` | loop |
+| `for` `in` | loops (C-style + for-in) |
+| `break` `continue` | loop control |
+| `match` | pattern matching |
 
-Context-sensitive words are parsed by position and may otherwise be used as ordinary identifiers:
+#### 1.5.2 Object Orientation and Types
 
-| Word | Context |
+| Keyword | Purpose |
 |--|--|
-| `from` | named import/re-export; `select` receive arm |
-| `to` | `select` send arm |
-| `after` | `select` timeout arm |
-| `move` | ownership transfer expression |
-| `ref` | parameter modifier |
-| `linked` | linked coroutine/scope modifier |
-| `supervisor` | supervisor scope modifier |
-| `cancelled` | cancellation check call |
+| `class` `struct` | class / struct declaration |
+| `extends` | class inheritance |
+| `interface` `implements` | interface declaration / implementation |
+| `enum` | enum declaration |
+| `type` | type alias |
+| `new` | instantiation |
+| `this` `super` | self / parent reference |
+| `constructor` | constructor |
+| `static` `private` `public` | visibility modifiers (`public` is the **default** and is almost never written explicitly) |
+| `abstract` `final` `override` | class/method modifiers (`override` is **optional** — overriding a parent method does not require an explicit annotation) |
+| `operator` | operator overloading |
+| `is` `as` | runtime type check / cast |
 
-Prelude type names are not lexer keywords. They are automatically available type symbols: `Array`, `BigInt`, `Bytes`, `Channel`, `DateTime`, `Exception`, `Json`, `Logger`, `Map`, `NetConn`, `NetListener`, `Range`, `Regex`, `Set`, and `StringBuilder`. The built-in `Result<T, E>` ADT is used by error-handling paths such as `catch!`.
+#### 1.5.3 Exception Handling
+
+`try` `catch` `finally` `throw`
+
+#### 1.5.4 Module System
+
+`import` `export`
+
+#### 1.5.5 Coroutines and Concurrency
+
+`go` `await` `select` `defer` `scope`
+
+#### 1.5.6 Type Names (reserved)
+
+`int` `int8` `int16` `int32` `int64` `uint8` `uint16` `uint32` `uint64`
+`float` `float32` `float64` `bool` `string` `unknown`
+
+> **Note**: the following names are **not** lexer keywords; they are built-in type symbols automatically introduced by the prelude:
+> `Array` · `BigInt` · `Bytes` · `Channel` · `DateTime` · `Exception` · `Json` · `Logger` · `Map` · `NetConn` · `NetListener` · `Range` · `Regex` · `Set` · `StringBuilder`.
+> `Result<T, E>` is the built-in ADT enum used by current error-handling paths and `catch!`; it is also directly available.
+> They may be locally shadowed by user types of the same name, but typically need no import.
+
+#### 1.5.7 Literal Keywords
+
+`true` `false` `null`
+
+#### 1.5.8 Context-sensitive Keywords
+
+These are not in the lexer keyword table; the parser recognizes them by position. They **may** be used as ordinary identifiers:
+
+| Token | Where it appears |
+|--|--|
+| `from` | `select` receive arm (`x from ch`); also in named import / re-export (`import { x } from "module"`) |
+| `to` | `select` send arm (`value to ch`) |
+| `default` | reserved, currently disabled |
+| `cancelled` | `cancelled()` cancellation check (actually a builtin function) |
+| `ref` | function parameter modifier (`fn f(p: ref T)`) |
+| `move` | ownership transfer (`move x`) |
+| `linked` | `linked go` / `linked scope` modifier |
+| `supervisor` | `supervisor scope` modifier |
+| `after` | `select` timeout arm (`after 1000 -> ...`) |
 
 ### 1.6 Literals
 
-#### Integer Literals
+#### 1.6.1 Integer Literals
 
-```xray
-0
-42
-1_000_000
-0xff
-0o755
-0b1010
+```ebnf
+IntLiteral ::= DecLit | HexLit | OctLit | BinLit
+DecLit ::= Digit (Digit | '_')*
+HexLit ::= '0x' HexDigit (HexDigit | '_')*
+OctLit ::= '0o' OctDigit (OctDigit | '_')*
+BinLit ::= '0b' BinDigit (BinDigit | '_')*
 ```
 
-Underscores may separate digits. Supported bases are decimal, hexadecimal, octal, and binary.
+- Digit separators `_` exist purely for readability and may appear anywhere between digits.
+- Default literal type is `int` (= `int64`). The `n` suffix promotes to `BigInt` (see §1.6.3).
+- Range: `int64` covers `[-(2^63), 2^63 - 1]`; overflow is detected at compile time.
 
-#### Floating-Point Literals
+```xray
+42
+0xFF
+0b1010
+0o77
+1_000_000      // one million
+```
+
+#### 1.6.2 Floating-Point Literals
+
+```ebnf
+FloatLiteral ::= Digit+ '.' Digit* Exp?
+              | Digit+ Exp
+              | '.' Digit+ Exp?
+Exp ::= ('e' | 'E') ('+' | '-')? Digit+
+```
+
+Literal type is `float` (= `float64`, IEEE-754 double precision).
 
 ```xray
 3.14
-.5
-1e9
-6.02e23
+1.0e10
+2.5E-3
+.5             // equivalent to 0.5
 ```
 
-Floating literals have type `float`.
+#### 1.6.3 BigInt Literals
 
-#### BigInt Literals
+```ebnf
+BigIntLiteral ::= (DecLit | HexLit | OctLit | BinLit) 'n'
+```
 
 ```xray
 123n
-0xffn
+0xFFn
 0b1010n
 ```
 
-A trailing `n` creates an arbitrary-precision integer value.
+Arbitrary-precision integers; arithmetic never overflows. See §14.8 for the type.
 
-#### Boolean and Null Literals
+#### 1.6.4 Boolean and Null Literals
 
 ```xray
 true
@@ -485,47 +561,166 @@ false
 null
 ```
 
-`true` and `false` have type `bool`. `null` is the singleton null value and is assignable to nullable types.
+- `true` / `false`: type `bool`.
+- `null`: type `null` (semantically the zero value of every nullable type `T?`).
 
-#### Strings
+#### 1.6.5 String Literals
+
+Xray supports two flavors of string literals: **escaped** and **raw**. Both can be quoted with single or double quotes, and both support `${...}` interpolation. Backtick strings are not part of the current grammar — the lexer rejects them.
+
+##### Plain strings (double / single quotes)
+
+```ebnf
+StringLiteral ::= '"' StrChar* '"' | "'" StrChar* "'"
+StrChar ::= any character that is not a quote, backslash, or newline
+          | EscapeSeq
+          | Interpolation
+EscapeSeq ::= '\' ('"' | "'" | '\\' | 'n' | 't' | 'r' | '0'
+                  | 'x' HexDigit{2}
+                  | 'u' HexDigit{4}
+                  | 'u{' HexDigit{1,6} '}')
+Interpolation ::= '${' Expression '}'
+```
+
+- Double and single quotes are **fully equivalent** — both support escapes and `${...}` interpolation.
+- Strings may span multiple lines; line breaks are part of the string.
+- Literals containing interpolation produce `TK_TEMPLATE_STRING` internally; literals without interpolation produce `TK_LITERAL_STRING`.
 
 ```xray
 "hello"
-'hello'
-"hello ${name}"
-r"C:\Users\${USER}"
-r'raw string'
+'world'
+"Hello, ${name}! ${1 + 2}"
+'tab\there\nnewline'
+"\u4F60\u597D"        // "你好"
+"\u{1F600}"            // emoji
 ```
 
-Single- and double-quoted strings are supported. Raw strings use an `r` prefix and still support interpolation. Backtick strings are not supported.
+**Interpolation expressions cannot contain unescaped quote characters of the surrounding kind** (a lexer restriction).
 
-#### Regex Literals
+##### Raw strings (`r` prefix)
+
+```ebnf
+RawString ::= 'r' ('"' RawChar* '"' | "'" RawChar* "'")
+RawChar ::= any character except the closing quote (including `\`, which is not processed)
+```
+
+- **No** escape processing (`\n`, `\t`, etc. are kept as-is).
+- `${...}` interpolation is still supported.
+- The identifier `r` standing alone is still a regular identifier (`TK_NAME`); it is recognized as a raw-string prefix only when immediately followed by a quote.
+
+```xray
+r"C:\path\to\file"          // literal contains two backslashes
+r'C:\Users\${USER}'         // backslash is not escaped, but ${USER} still interpolates
+```
+
+##### Backtick strings (illegal)
+
+The lexer explicitly rejects backtick strings. For templates, use plain double / single quotes plus `${...}`.
+
+#### 1.6.6 Regex Literals
+
+```ebnf
+RegexLiteral ::= '/' RegexBody '/' RegexFlag*
+RegexFlag ::= 'g' | 'i' | 'm' | 's'
+```
 
 ```xray
 /[a-z]+/i
-/^xray$/
+/\d+\.\d+/g
 ```
 
-Regex literals are lexed contextually to avoid confusion with division. Runtime behavior is implemented by the regex support in the standard library/runtime.
+- Flags: `g` (global), `i` (case-insensitive), `m` (multi-line), `s` (dot matches newline).
+- Implementation: see `stdlib/regex`.
+- **Disambiguation**: when `/` appears in a position that can accept a unary `/` (e.g., right after `=`, `,`, `(`, an operator), the scanner treats it as a regex; elsewhere it is division.
 
-### 1.7 Tokens and Operators
+### 1.7 Operators and Tokens
 
-Important punctuation:
+Full token table (by category):
 
-| Token | Meaning |
+#### 1.7.1 Punctuation
+
+| Token | Use |
 |--|--|
 | `(` `)` | grouping, calls, parameter lists |
-| `{` `}` | blocks, object/Json literals, match/select bodies |
-| `[` `]` | arrays, indexing, slicing |
-| `#{` | Map literal start |
+| `{` `}` | blocks, object literals |
+| `[` `]` | array literals, indexing |
+| `,` | separator |
+| `.` | member access |
+| `:` | type annotation, map kv, ternary |
+| `;` | for-loop separator (optional elsewhere) |
+| `?` | nullable type, ternary |
+| `@` | attribute marker (`@test`) |
+
+#### 1.7.2 Arithmetic
+
+`+` `-` `*` `/` `%`
+
+#### 1.7.3 Bitwise
+
+`&` `|` `^` `~` `<<` `>>`
+
+#### 1.7.4 Comparison
+
+`==` `!=` `===` `!==` `<` `<=` `>` `>=`
+
+- `==` `!=`: value equality (with implicit numeric promotion: int→float).
+- `===` `!==`: strict equality (type + value; no promotion).
+- `<` etc.: supported by numbers and strings; not supported by other types.
+
+#### 1.7.5 Logical
+
+`&&` `||` `!`
+
+Short-circuit evaluation.
+
+#### 1.7.6 Assignment
+
+`=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`
+
+#### 1.7.7 Increment / Decrement
+
+`++` `--`
+
+Only the **postfix** form `x++` / `x--` is supported; the prefix form `++x` / `--x` is a compile error. See §3.2.
+
+#### 1.7.8 Type-related
+
+| Token | Use |
+|--|--|
+| `?` | nullable type (`T?`), ternary, optional-chain prefix |
+| `?.` | optional chain (`obj?.prop`) |
+| `??` | null coalescing (`a ?? b`) |
+| `!` | force unwrap (postfix, `expr!`) / logical not (prefix) |
+| `\|` | union type (`int \| string`) / bitwise or |
+| `->` | unified arrow: function return type, function type, closures, `match` / `select` arms |
+| `...` | rest / spread |
+| `..` | range (`0..10`) |
+| `is` | runtime type check |
+| `as` | type cast |
+
+`!` ambiguity is resolved at parse time: immediately after an expression and with no whitespace, it is force-unwrap; in prefix position, it is logical not.
+
+#### 1.7.9 Collection-literal Starters
+
+| Token | Use |
+|--|--|
+| `#{` | empty Map literal |
 | `#[` | Set literal start |
-| `.` `?.` | member access and optional chaining |
-| `:` | type annotations, object/Map entry separator |
-| `;` | optional statement separator |
-| `@` | attribute marker |
-| `?` | nullable types and ternary operator |
 
-Operators include arithmetic, bitwise, comparison, logical, assignment, increment/decrement, range, optional chaining, force unwrap, and nullish coalescing operators.
+Examples:
 
-The arrow token is `->`. Xray does not use `=>` for match arms, select arms, or Map literals.
+```xray
+let empty_map = #{}
+let primes = #[2, 3, 5, 7]
+```
+
+#### 1.7.10 Patterns
+
+| Token | Use |
+|--|--|
+| `_` | `match` wildcard |
+
+#### 1.7.11 Operator Precedence
+
+The full precedence table is in [§3.1](#31-precedence-and-associativity).
 <!-- /xr-spec:en -->

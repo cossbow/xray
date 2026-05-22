@@ -305,80 +305,298 @@ OperatorToken ::= '+' | '-' | '*' | '/' | '%'
 <!-- xr-spec:en -->
 ---
 
-## Appendix A. EBNF
+## Appendix A. EBNF Grammar
+
+> Source of truth: `src/frontend/parser/xparse_*.c`. This appendix is a compact, curated EBNF; the parser implementation is the authoritative resolver of any conflicts.
+
+### A.1 Lexical Layer
 
 ```ebnf
-Program ::= Statement* EOF
+SourceFile ::= Statement*
 
-Statement ::= ExprStmt
-            | VarDecl
-            | FnDecl
-            | ClassDecl
-            | StructDecl
-            | InterfaceDecl
-            | EnumDecl
-            | TypeAliasDecl
-            | ImportDecl
-            | ExportDecl
-            | IfStmt
-            | WhileStmt
-            | ForStmt
-            | ForInStmt
-            | MatchStmt
-            | ScopeStmt
-            | SelectStmt
-            | ReturnStmt
-            | BreakStmt
-            | ContinueStmt
-            | ThrowStmt
-            | TryStmt
-            | DeferStmt
-            | YieldStmt
-            | Block
+Comment ::= '//' [^\n]*
+         |  '/*' .* '*/'
 
-Block ::= '{' Statement* '}'
+Identifier ::= IdStart IdContinue*
+IdStart    ::= 'a'..'z' | 'A'..'Z' | '_'
+IdContinue ::= IdStart | '0'..'9'
 
+IntLiteral   ::= DecimalInt | HexInt | BinInt | OctInt
+DecimalInt   ::= DecimalDigit ('_'? DecimalDigit)*
+HexInt       ::= '0x' HexDigit ('_'? HexDigit)*
+BinInt       ::= '0b' ('0' | '1') ('_'? ('0' | '1'))*
+OctInt       ::= '0o' ('0'..'7') ('_'? ('0'..'7'))*
+
+FloatLiteral ::= DecimalInt '.' DecimalInt? Exponent?
+              |  DecimalInt Exponent
+Exponent     ::= ('e' | 'E') ('+' | '-')? DecimalDigit+
+
+BigIntLiteral ::= DecimalInt 'n'
+
+StringLiteral ::= '"' StringChar* '"'
+                | "'" StringChar* "'"
+RawStringLiteral ::= 'r' '"' [^"]* '"'
+RegexLiteral ::= '/' RegexBody '/' RegexFlags?
+
+BoolLiteral ::= 'true' | 'false'
+NullLiteral ::= 'null'
+```
+
+### A.2 Types
+
+```ebnf
 Type ::= UnionType
-UnionType ::= PrimaryType ('|' PrimaryType)*
-PrimaryType ::= NamedType | FunctionType | TupleType | ObjectType | PrimaryType '?'
-NamedType ::= QualifiedIdent TypeArgs?
+UnionType ::= IntersectionType ('|' IntersectionType)*
+IntersectionType ::= NullableType
+NullableType ::= PrimaryType '?'?
+PrimaryType ::= NamedType | FunctionType | TupleType | ObjectType
+NamedType   ::= QualifiedIdent TypeArgs?
 FunctionType ::= '(' TypeList? ')' '->' Type
-TupleType ::= '(' Type (',' Type)+ ')'
-ObjectType ::= '{' ObjectField (',' ObjectField)* ','? '}'
+TupleType   ::= '(' Type (',' Type)+ ')'
+ObjectType  ::= '{' FieldList? '}'
+FieldList   ::= ObjectField (',' ObjectField)* ','?
 ObjectField ::= Identifier ':' Type
+QualifiedIdent ::= Identifier ('.' Identifier)*
+TypeArgs    ::= '<' Type (',' Type)* '>'
+TypeList    ::= Type (',' Type)*
+```
 
-Expression ::= Assignment
-Assignment ::= Ternary (AssignOp Expression)?
-Ternary ::= LogicOr ('?' Expression ':' Expression)?
-Primary ::= Literal | Identifier | ArrayLit | MapLit | SetLit | ObjectLit
-          | Closure | MatchExpr | '(' Expression ')' | TupleExpr
+### A.3 Expressions
+
+```ebnf
+Expression ::= AssignExpr
+AssignExpr ::= TernaryExpr (AssignOp Expression)?
+AssignOp   ::= '=' | '+=' | '-=' | '*=' | '/=' | '%='
+            |  '&=' | '|=' | '^=' | '<<=' | '>>='
+
+TernaryExpr ::= LogicOrExpr ('?' Expression ':' Expression)?
+LogicOrExpr ::= LogicAndExpr ('||' LogicAndExpr)*
+            |   NullCoalesce
+LogicAndExpr ::= BitOrExpr ('&&' BitOrExpr)*
+NullCoalesce ::= LogicAndExpr ('??' LogicAndExpr)*
+BitOrExpr   ::= BitXorExpr ('|' BitXorExpr)*
+BitXorExpr  ::= BitAndExpr ('^' BitAndExpr)*
+BitAndExpr  ::= EqualityExpr ('&' EqualityExpr)*
+EqualityExpr ::= RelationalExpr (('==' | '!=' | '===' | '!==') RelationalExpr)*
+RelationalExpr ::= ShiftExpr (('<' | '<=' | '>' | '>=') ShiftExpr)*
+ShiftExpr   ::= AdditiveExpr (('<<' | '>>') AdditiveExpr)*
+AdditiveExpr ::= MultiplicativeExpr (('+' | '-') MultiplicativeExpr)*
+MultiplicativeExpr ::= TypeOpExpr (('*' | '/' | '%') TypeOpExpr)*
+TypeOpExpr  ::= UnaryExpr (('as' | 'is') Type)*           // safe cast is `x as T?` where T? is a nullable type
+RangeExpr   ::= AdditiveExpr ('..' AdditiveExpr)?
+
+UnaryExpr ::= ('-' | '+' | '!' | '~' | '++' | '--') UnaryExpr
+           |  'new' QualifiedIdent TypeArgs? '(' ArgList? ')'
+           |  'move' UnaryExpr
+           |  'await' ('all' | 'any' | 'anySuccess')? UnaryExpr
+           |  'go' (Block | PostfixExpr)
+           |  'try?' UnaryExpr
+           |  'try!' UnaryExpr
+           |  PostfixExpr
+
+PostfixExpr ::= Primary PostfixOp*
+PostfixOp   ::= '(' ArgList? ')'              // call
+             |  '.' Identifier                 // member
+             |  '?.' (Identifier | '(' ArgList? ')')  // optional chain
+             |  '[' Expression ']'             // index
+             |  '[' Expression? ':' Expression? ']'  // slice
+             |  '!'                            // force unwrap
+             |  '++' | '--'                    // postfix inc/dec
+
+Primary ::= IntLiteral | FloatLiteral | BigIntLiteral
+         |  StringLiteral | RawStringLiteral | RegexLiteral
+         |  BoolLiteral | NullLiteral
+         |  Identifier
+         |  ArrayLit | MapLit | SetLit | ObjectLit
+         |  ArrowFunction
+         |  MatchExpr
+         |  TryExpr
+         |  CatchBlock
+         |  '(' Expression ')'
+         |  '(' Expression (',' Expression)+ ')'  // tuple
 
 ArrayLit ::= '[' (Expression (',' Expression)* ','?)? ']'
-MapLit ::= '#{' (Expression ':' Expression (',' Expression ':' Expression)* ','?)? '}'
-SetLit ::= '#[' (Expression (',' Expression)* ','?)? ']'
-ObjectLit ::= '{' ObjectFieldExpr (',' ObjectFieldExpr)* ','? '}'
+MapLit   ::= '#{' (MapEntry (',' MapEntry)* ','?)? '}'
+MapEntry ::= Expression ':' Expression
+SetLit   ::= '#[' (Expression (',' Expression)* ','?)? ']'
+ObjectLit ::= '{' (ObjectFieldExpr (',' ObjectFieldExpr)* ','?)? '}'
 ObjectFieldExpr ::= Identifier ':' Expression | Identifier
-Closure ::= '(' ParamList? ')' '->' (Expression | Block)
-MatchExpr ::= 'match' '(' Expression ')' '{' MatchArm+ '}'
-MatchArm ::= Pattern ('if' '(' Expression ')')? '->' (Expression | Block)
 
-ImportDecl ::= 'import' ImportMembers 'from' ImportModule
-             | 'import' ImportModule ('as' Identifier)?
-ImportMembers ::= '{' ImportMember (',' ImportMember)* ','? '}'
-ImportMember ::= Identifier ('as' Identifier)?
-ImportModule ::= StringLiteral | Identifier ('/' Identifier)?
+ArrowFunction ::= '(' ArrowParams? ')' '->' (Expression | Block)
+ArrowParams ::= ArrowParam (',' ArrowParam)*
+ArrowParam  ::= Identifier ':' Type
+// Note: arrow closures cannot declare an explicit return type;
+// use `fn(p: T) -> R { ... }` or annotate the binding (`let f: (T) -> R = ...`) instead.
 
-ExportDecl ::= 'export' Declaration
-             | 'export' Identifier (',' Identifier)*
-             | 'export' '{' ExportSpec (',' ExportSpec)* '}' 'from' StringLiteral
-             | 'export' '*' 'from' StringLiteral
-ExportSpec ::= Identifier ('as' Identifier)?
+MatchExpr ::= 'match' '(' Expression ')' '{' MatchArm (','? MatchArm)* ','? '}'
+MatchArm  ::= Pattern ('if' '(' Expression ')')? '->' (Expression | Block)
+
+TryExpr     ::= 'try?' Expression | 'try!' Expression
+CatchBlock  ::= 'catch!' Block
+
+ThrowExpr   ::= 'throw' Expression                // operand's static type must be Exception-derived (E0370)
+
+ArgList ::= Expression (',' Expression)*
+```
+
+### A.4 Patterns
+
+```ebnf
+Pattern ::= LiteralPattern
+         |  RangePattern
+         |  EnumPattern
+         |  TypePattern
+         |  WildcardPattern
+         |  BindingPattern
+         |  MultiPattern
+
+LiteralPattern  ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral | NullLiteral
+RangePattern    ::= Expression '..' Expression
+EnumPattern     ::= QualifiedIdent VariantPayloadPattern?    // ADT enum payload destructuring
+VariantPayloadPattern ::= '(' Pattern (',' Pattern)* ')'
+TypePattern     ::= 'is' Type Identifier?
+WildcardPattern ::= '_'
+BindingPattern  ::= Identifier
+MultiPattern    ::= Pattern (',' Pattern)+
+```
+
+### A.5 Statements
+
+```ebnf
+Statement ::= ExprStmt
+           |  VarDecl
+           |  FnDecl
+           |  ClassDecl
+           |  StructDecl
+           |  InterfaceDecl
+           |  EnumDecl
+           |  TypeAliasDecl
+           |  ImportDecl
+           |  ExportDecl
+           |  IfStmt
+           |  WhileStmt
+           |  ForStmt
+           |  ForInStmt
+           |  ForInPairStmt
+           |  MatchStmt
+           |  ScopeStmt
+           |  SelectStmt
+           |  ReturnStmt
+           |  BreakStmt
+           |  ContinueStmt
+           |  ThrowStmt
+           |  TryStmt
+           |  DeferStmt
+           |  YieldStmt
+           |  Block
+           // Note: print/dump are calls inside ExprStmt; go is an expression (GoExpr)
+
+ExprStmt ::= Expression (';' | LineBreak)
+Block    ::= '{' Statement* '}'
+
+IfStmt    ::= 'if' '(' Expression ')' Block ('else' 'if' '(' Expression ')' Block)* ('else' Block)?
+WhileStmt ::= 'while' '(' Expression ')' Block
+ForStmt   ::= 'for' '(' VarDecl? ';' Expression? ';' Expression (',' Expression)* ? ')' Block
+ForInStmt ::= 'for' '(' Identifier 'in' Expression ')' Block
+ForInPairStmt ::= 'for' '(' Identifier ',' Identifier 'in' Expression ')' Block
+             |  'for' '(' '(' Identifier ',' Identifier ')' 'in' Expression ')' Block
+MatchStmt ::= 'match' '(' Expression ')' '{' MatchArm (','? MatchArm)* ','? '}'
+
+ReturnStmt   ::= 'return' (Expression | '(' Expression (',' Expression)+ ')')?
+BreakStmt    ::= 'break'
+ContinueStmt ::= 'continue'
+
+ThrowStmt ::= 'throw' Expression
+TryStmt   ::= 'try' Block CatchClause? FinallyClause?
+CatchClause ::= 'catch' ('(' Identifier (':' Type)? ')')? Block
+FinallyClause ::= 'finally' Block
+
+DeferStmt ::= 'defer' (Expression | Block)
+
+// print is a normal global function call, syntactically an ExprStmt.
+
+// go is an expression returning Task<T>. It is not a separate statement category (it appears wrapped in ExprStmt).
+
+ScopeStmt ::= 'scope' Block            // lexical scope + structured concurrency
 
 SelectStmt ::= 'select' '{' SelectArm+ '}'
-SelectArm  ::= RecvArm | SendArm | TimeoutArm | DefaultArm
-RecvArm    ::= Identifier 'from' Expression '->' Block
-SendArm    ::= Expression 'to' Expression '->' Block
-TimeoutArm ::= 'after' Expression '->' Block
-DefaultArm ::= '_' '->' Block
+SelectArm  ::= Identifier 'from' Expression '->' Block      // receive
+            |  Expression 'to' Expression '->' Block        // send
+            |  'after' Expression '->' Block                // timeout
+            |  '_' '->' Block                                // default
+
+YieldStmt ::= 'yield'
 ```
+
+### A.6 Declarations
+
+```ebnf
+VarDecl ::= ('let' | 'const' | 'shared' ('const' | 'let')) Binding (',' Binding)*
+Binding ::= BindingPattern (':' Type)? ('=' Expression)?
+BindingPattern ::= Identifier
+                |  '[' BindingPattern (',' BindingPattern)* ','? ']'
+                |  '(' BindingPattern (',' BindingPattern)+ ','? ')'
+                |  '{' Identifier (',' Identifier)* ','? '}'
+
+FnDecl ::= AttrList? Modifier* 'fn' Identifier TypeParams? '(' ParamList? ')' ReturnType? Block
+ParamList ::= Param (',' Param)*
+Param     ::= Modifier* Identifier ':' Type ('=' Expression)?
+           |  '...' Identifier ':' Type
+ReturnType ::= '->' Type | '->' '(' Type (',' Type)+ ')'
+Modifier  ::= 'in' | 'ref' | 'private' | 'public' | 'static' | 'final' | 'abstract' | 'override'
+              // public/override are accepted but never required (default/implicit behavior)
+
+TypeParams ::= '<' TypeParam (',' TypeParam)* '>'
+TypeParam  ::= Identifier (':' Type ('&' Type)*)?         // constraints use ':', multiple use '&'
+
+ClassDecl ::= Modifier* 'class' Identifier TypeParams?
+              ('extends' NamedType)?
+              ('implements' NamedType (',' NamedType)*)?
+              '{' ClassMember* '}'
+ClassMember ::= FieldDecl | MethodDecl | ConstructorDecl
+FieldDecl ::= Modifier* Identifier ':' Type ('=' Expression)?
+MethodDecl ::= Modifier* Identifier '(' ParamList? ')' ReturnType? Block
+            |  Modifier* 'operator' OperatorToken '(' ParamList? ')' ReturnType? Block
+ConstructorDecl ::= 'constructor' '(' ParamList? ')' Block
+
+StructDecl ::= 'struct' Identifier TypeParams?
+               ('implements' NamedType (',' NamedType)*)?
+               '{' ClassMember* '}'
+
+InterfaceDecl ::= 'interface' Identifier TypeParams?
+                  ('extends' NamedType (',' NamedType)*)?
+                  '{' InterfaceMember* '}'
+InterfaceMember ::= Identifier '(' ParamList? ')' ReturnType?
+
+EnumDecl       ::= 'enum' Identifier TypeParams?
+                   ('implements' NamedType (',' NamedType)*)?
+                   '{' EnumVariant (',' EnumVariant)* ','? EnumMethod* '}'
+EnumVariant    ::= Identifier VariantPayload?
+                |  Identifier '=' BackingValue                  // simple enum (no payload)
+EnumMethod     ::= 'fn' Identifier TypeParams? '(' ParamList? ')' ReturnType? Block
+VariantPayload ::= '(' VariantField (',' VariantField)* ')'
+VariantField   ::= (Identifier ':')? Type
+BackingValue   ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral
+
+TypeAliasDecl ::= 'type' Identifier TypeParams? '=' Type
+
+ImportDecl ::= 'import' ImportMembers 'from' ImportModule
+            |  'import' ImportModule ('as' Identifier)?
+ExportDecl ::= 'export' Declaration                                         // export the declaration directly
+            |  'export' Identifier                                          // export an already-declared identifier
+            |  'export' '*' 'from' StringLiteral                            // forwarding export
+ImportMembers ::= '{' ImportMember (',' ImportMember)* ','? '}'
+ImportMember  ::= Identifier ('as' Identifier)?
+ImportModule  ::= StringLiteral | Identifier ('/' Identifier)?
+
+AttrList ::= ('@' Identifier ('(' ArgList? ')')?)*
+
+OperatorToken ::= '+' | '-' | '*' | '/' | '%'
+               |  '&' | '|' | '^'
+               |  '==' | '!=' | '<' | '<=' | '>' | '>='
+               |  '[]' | '[]='
+               |  '!' | '~'
+```
+
+> Note: this EBNF is curated for guidance. Precedence, associativity, and disambiguation are determined by the parser implementation; in case of ambiguity, treat `src/frontend/parser/xparse_*.c` as authoritative.
 <!-- /xr-spec:en -->
