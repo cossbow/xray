@@ -66,8 +66,8 @@ MCP 重构不提供迁移期，不保留旧行为。
 
 ### 3.4 测试层
 
-- ~~缺少真实 stdio 协议端到端测试~~ 部分完成（transport、lifecycle、parse error、unknown method、notification、runner stdout isolation）。
-- 仍需 resources/templates/list、prompts/list、prompts/get 和更多 tools/call transcript 覆盖。
+- ~~缺少真实 stdio 协议端到端测试~~ 部分完成（transport、lifecycle、parse error、unknown method、notification、runner stdout isolation、resources/templates/list、prompts/list、prompts/get、mixed NDJSON、tools/call invalid params / structuredContent）。
+- 仍需 resources/read 和 prompts/get 错误路径的 transcript 覆盖。
 - ~~缺少 `xray_run` 超时、输出截断、stdlib 白名单测试~~ 已完成 unit coverage。
 - ~~缺少 knowledge/prompt 语法示例可解析的回归测试~~ 已完成：topic fences 和 prompt smoke examples 已进入 MCP knowledge 回归。
 

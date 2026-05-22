@@ -76,12 +76,14 @@
 - notification 不返回 response。
 - 拒绝或忽略 `Content-Length` 输入。
 - runner stdout 不污染 MCP stdout 协议流。
+- resources/templates/list、prompts/list、prompts/get 的完整协议路径。
+- 连续多条 NDJSON request 中混合 request、notification 和 error。
+- tools/call transcript 覆盖 invalid params 与 structuredContent。
 
 仍建议覆盖：
 
-- resources/templates/list、prompts/list、prompts/get 的完整协议路径。
-- 连续多条 NDJSON request 中混合 request、notification 和 error。
-- 更完整的 tools/call transcript，包括 invalid params 与 structuredContent。
+- resources/read 静态 URI 与 template URI 的 transcript 路径。
+- prompts/get unknown prompt 与缺少 name 的 transcript 错误路径。
 
 ### 2. 协议版本策略
 
