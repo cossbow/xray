@@ -125,33 +125,114 @@ fn oldAPI() { ... }
 
 ## 12. Testing
 
-Tests are marked with `@test`:
+> Source of truth: `src/app/cli/xcli_test.c`, `stdlib/xray/test.xr`, `docs/testing-spec.md`.
+
+### 12.1 Declaring Tests: the `@test` Attribute
+
+Xray marks test functions with the **`@test` attribute**, **not** with a `test("...")` function call.
+
+```ebnf
+TestDecl ::= '@test' FnDecl
+```
 
 ```xray
 @test
 fn test_addition() {
     assert_eq(1 + 1, 2)
 }
+
+@test
+fn test_with_assertions() {
+    let result = compute()
+    assert_eq(result, 42)
+    assert(result > 0)
+}
 ```
 
-Test functions are discovered by `xray test`. They usually take no parameters and use global assertion builtins.
+**Semantics**:
+- Functions annotated with `@test` are auto-discovered and run by `xray test`; ordinary functions are not.
+- Test naming convention: `test_xxx` (snake_case), descriptive.
+- Test functions take no parameters and return nothing; expectations are expressed via the `assert*` family.
+- A file may contain **any number** of `@test` functions; they run in declaration order.
 
-Recognized attributes include:
+### 12.2 Test Entry Points
 
-| Attribute | Applies to | Meaning |
-|--|--|--|
-| `@test` | function | mark a test function |
-| `@native` | function/class/struct | native implementation |
-| `@deprecated` | declaration | deprecation warning |
+Test file convention:
+- Either co-located with the code under test or under `tests/regression/`.
+- File name format: `XXXX_topic.xr` (four-digit number + topic).
 
-Assertion functions:
+Run:
 
-| Function | Meaning |
+```bash
+xray test                                  # run all tests
+xray test tests/regression/01_literals/    # run a whole group
+xray test tests/regression/01_literals/0100_int_basic.xr   # single file
+```
+
+### 12.3 Assertion API
+
+Xray provides assertion functions as **global builtins** (no `import test` needed). Full signatures are in [§13.5](#135-assertions-for-testing).
+
+| Function | Semantics |
 |--|--|
-| `assert(cond, msg?)` | require condition |
-| `assert_true(cond)` | require true |
-| `assert_false(cond)` | require false |
-| `assert_eq(a, b)` | require equality |
-| `assert_ne(a, b)` | require inequality |
-| `assert_throws(fn)` | require thrown exception |
+| `assert(cond, msg?)` | throws when `cond` is false |
+| `assert_eq(a, b)` | prints both values when `a == b` fails |
+| `assert_ne(a, b)` | `a != b` |
+| `assert_true(cond)` / `assert_false(cond)` | equivalent to `assert(cond)` / `assert(!cond)` |
+| `assert_throws(fn)` | expects `fn()` to throw |
+
+> **Naming consistency**: all assertion functions are `snake_case` (`assert_eq`, not `assertEq`).
+
+### 12.4 Async Tests
+
+A `@test` function body may use `go` / `await` / `await all` / `await any`:
+
+```xray
+@test
+fn test_async_fetch() {
+    let task = go fetch_data("http://...")
+    let result = await task
+    assert_eq(result.status, 200)
+}
+```
+
+### 12.5 Attribute Overview
+
+Xray attributes are prefixed with `@` followed by an identifier. The current parser only recognizes **three** attributes (source: `xparse_decl.c:xr_parse_single_attribute`):
+
+| Attribute | Applies to | Description |
+|---|---|---|
+| `@test` | function | mark as a test function; accepts optional arguments: `@test(skip)` to skip, `@test(timeout: 30)` to set a timeout |
+| `@native` | class / struct / fn | declare a native implementation; method bodies are provided by C (used in stdlib type declarations) |
+| `@deprecated` | any declaration | deprecation warning; optional message: `@deprecated("use X instead")` |
+
+```xray
+@test                                 // mark as a test
+fn test_basic() { ... }
+
+@test(skip)                           // skip this test
+fn test_wip() { ... }
+
+@native                               // C implementation
+class Array<T> {
+    length: int
+    push(v: T)
+    // no method bodies — provided by src/runtime/object/xarray_methods.c
+}
+
+@deprecated("use newAPI() instead")
+fn oldAPI() { ... }
+```
+
+> Attributes that do not exist (do not use them in user code): `@before_each` / `@after_all` / `@async` / `@override` etc. — these trigger an "unknown attribute name" error.
+
+### 12.6 `xray run` / `xray test` / `xray repl`
+
+| Command | Purpose |
+|--|--|
+| `xray run main.xr` | run the main program |
+| `xray test` | run the test suite |
+| `xray repl` | start the REPL |
+| `xray build --aot` | AOT compile |
+| `xray fmt` | format code |
 <!-- /xr-spec:en -->

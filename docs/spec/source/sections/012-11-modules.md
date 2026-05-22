@@ -162,11 +162,46 @@ time.sleep(100)
 
 ## 11. Modules
 
-### 11.1 Module Identity
+> Source of truth: `src/module/xmodule.c`, `src/module/xmodule_resolve.c`, `src/frontend/parser/xparse_import.c`.
 
-Each `.xr` file is a module. Module paths follow directory structure. A module exports only declarations explicitly marked with `export`.
+### 11.1 Module Definition
 
-### 11.2 Import Syntax
+- Each `.xr` file is one module.
+- Module name = file name (with the `.xr` suffix removed).
+- Module path mirrors directory structure: `src/utils/string.xr` → `utils.string`.
+
+### 11.2 Project Layout
+
+```
+my_project/
+├── xray.toml              # package manifest (name, dependencies, entry)
+├── src/
+│   ├── main.xr            # entry
+│   ├── utils.xr
+│   └── lib/
+│       └── helper.xr
+├── tests/
+│   └── test_utils.xr
+└── docs/
+```
+
+`xray.toml` example:
+
+```toml
+[package]
+name = "my_project"
+version = "0.1.0"
+entry = "src/main.xr"
+
+[dependencies]
+http = "1.0"
+json = "0.2"
+
+[dev-dependencies]
+test = "1.0"
+```
+
+### 11.3 `import` Syntax
 
 ```ebnf
 ImportStmt ::= 'import' ImportMembers 'from' ImportModule
@@ -177,35 +212,101 @@ ImportModule  ::= StringLiteral | ModuleName
 ModuleName    ::= Identifier ('/' Identifier)?
 ```
 
-Examples:
+```xray
+// 1. stdlib: bare identifier; without `as`, the alias equals the module name
+import time
+import datetime
+import http as httpClient
+
+// 2. third-party packages: owner/name form
+import alice/utils
+import bob/http_client as httpClient
+
+// 3. file-path or directory-path: string literal, optional explicit alias, otherwise inferred from the trailing path segment
+import "./modules/mod_a.xr" as a
+import "../utils/string_utils.xr" as utils
+import "models/user" as user
+
+// 4. named imports: members may be renamed; the `from` operand may be a quoted path or a bare module name
+import { readFile, writeFile as write } from io
+import { publicFn } from "./modules/mod_a.xr"
+```
+
+JavaScript-style default import (`import name from "module"`) is **not supported**. In Xray, use `import "module" as name`, `import module`, or `import { name } from module`.
+
+**Resolution algorithm** (in priority order):
+1. **stdlib name resolution**: a bare identifier `import time` → the built-in stdlib module table.
+2. **Relative path**: `"./xxx.xr"` and `"../xxx.xr"` are resolved relative to the current file.
+3. **Project-root path**: a quoted path that does not start with `./` or `../` is resolved as a project-relative directory import.
+4. **Third-party packages**: `owner/name` is resolved through the `[dependencies]` section in `xray.toml`.
+
+**Source of truth**: `xparse_import.c` and `xmodule_resolve_path()`.
+
+### 11.4 `export` and Visibility
+
+Xray supports three export forms:
+
+```ebnf
+ExportStmt ::= 'export' Declaration                              // export the declaration directly
+            |  'export' Identifier                               // export an already-declared identifier
+            |  'export' '{' ExportSpec (',' ExportSpec)* '}' 'from' StringLiteral
+            |  'export' '*' 'from' StringLiteral
+ExportSpec ::= Identifier ('as' Identifier)?
+```
+
+```xray
+// 1. export a declaration directly
+export fn publicFn() -> string { return "hi" }
+export class PublicClass { ... }
+export const VERSION = "1.0"
+
+// 2. export an already-declared identifier (declare internally first, expose at the end)
+fn _helper() -> string { return "..." }
+fn publicFn() -> string { return _helper() }
+export publicFn
+
+// 3. re-export (with optional renaming)
+export { getUser, getUserAge as getAge } from "./user"
+
+// 4. wildcard re-export (forward all exports of another module)
+export * from "./product"
+```
+
+- Declarations not marked `export` are **private** to the module.
+- Internal state (`let _x`, `const _VERSION`, `fn _helper`) does not collide across modules even with the same name.
+- Re-exports and wildcard re-exports are commonly used in `index.xr` to aggregate public APIs of submodules.
+
+### 11.5 Naming Conventions
+
+- Module names: `snake_case` (`http_client.xr` / `string_utils.xr`).
+- Public symbols: `camelCase` or `PascalCase` (for classes / interfaces).
+- Internal symbols: prefix with `_` (`_internal_helper`).
+
+### 11.6 Circular Dependencies
+
+Xray **forbids** circular dependencies. Module loading builds a DAG; a detected cycle is a compile error.
+
+### 11.7 Native Modules
+
+Modules exposed from the C layer (`time`, `http`, `os`, etc.) are registered through the native ABI:
+
+```c
+// C side
+XRAY_API void register_time_module(xray_vm_t* vm) {
+    xray_module_t* m = xray_module_create(vm, "time");
+    xray_module_add_fn(m, "now", time_now);
+    xray_module_add_fn(m, "sleep", time_sleep);
+    xray_module_register(vm, m);
+}
+```
+
+Usage from Xray code is identical:
 
 ```xray
 import time
-import http as h
-import alice/utils
-import "./helper.xr" as helper
-import "models/user" as user
-import { readFile, writeFile as write } from io
+let t = time.now()
+time.sleep(100)
 ```
 
-### 11.3 Export Syntax
-
-```xray
-export fn f() {}
-export const VERSION = "1.0"
-export f, VERSION
-export { a, b as c } from "./m"
-export * from "./m"
-```
-
-### 11.4 Resolution
-
-Resolution distinguishes:
-
-1. Standard library modules.
-2. Relative quoted paths (`./`, `../`).
-3. Project-root quoted paths.
-4. Third-party `owner/name` package names.
-
-JavaScript default import syntax is rejected.
+See the "native module registration" section of `docs/rules/architecture.md` for details.
 <!-- /xr-spec:en -->

@@ -190,36 +190,179 @@ print(Reflect.typeOf(c))       // "Container<int>"
 
 ## 9. Generics
 
-Generic functions, classes, structs, interfaces, and ADT enums use type parameters:
+> Source of truth: `src/frontend/analyzer/xanalyzer_generic.c`, `src/frontend/analyzer/xanalyzer_subtype.c`.
 
-```xray
-fn id<T>(x: T) -> T { return x }
-class Box<T> { value: T }
-enum Option<T> { Some(T) None }
+### 9.1 Type Parameter Syntax `<T>`
+
+```ebnf
+TypeParams ::= '<' TypeParam (',' TypeParam)* '>'
+TypeParam  ::= Identifier (':' ConstraintList)?
+ConstraintList ::= Type ('&' Type)*               // intersection constraints joined by '&'
+TypeArgs   ::= '<' Type (',' Type)* '>'
 ```
 
-Constraints use `:`:
-
 ```xray
-fn max<T: Comparable>(a: T, b: T) -> T {
-    return a > b ? a : b
+// Generic function
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+let a = identity<int>(42)
+let b = identity("hello")               // T inferred as string
+
+// Generic class
+class Box<T> {
+    value: T
+    constructor(v: T) { this.value = v }
+    get() -> T { return this.value }
+}
+
+let b1 = new Box<int>(42)
+let b2 = new Box<string>("hi")
+
+// Multi-parameter generic
+class Pair<K, V> {
+    key: K
+    value: V
+    constructor(k: K, v: V) {
+        this.key = k; this.value = v
+    }
+}
+
+// Generic interface
+interface Comparable<T> {
+    compareTo(other: T) -> int
 }
 ```
 
-Multiple constraints use `&`:
+### 9.2 Type Constraints: `<T: Constraint>` and Intersection Constraints `&`
+
+Xray's constraint syntax uses a colon `:` uniformly, with multiple constraints joined by `&` (read as "must satisfy simultaneously"). It **does not use** Java/TS `extends` / `implements` as constraint keywords.
 
 ```xray
-fn f<T: Comparable & Stringable>(x: T) -> string {
-    return x.toString()
+// Single constraint
+fn first<T: Comparable>(a: T, b: T) -> T {
+    return a
+}
+
+// Multiple constraints (intersection) — T must satisfy Comparable, Hashable, and Stringable
+fn passThrough<T: Comparable & Hashable & Stringable>(x: T) -> T {
+    return x
+}
+
+// Multiple type parameters, each independently constrained
+fn pickValue<K: Hashable, V>(k: K, v: V) -> V {
+    return v
 }
 ```
 
-Built-in constraint interfaces include:
+**Built-in constraint interfaces** (see §14.14 for details):
 
-| Constraint | Meaning |
-|--|--|
-| `Comparable` | supports ordering comparisons |
-| `Hashable` | valid as a Map/Set key |
-| `Stringable` | has string conversion |
-| `Iterable<T>` | can be used in `for-in` |
+| Interface | Meaning |
+|---|---|
+| `Comparable` | usable with `<` `<=` `>` `>=`; int/float/string and types implementing `Comparable` |
+| `Hashable` | usable as a `Map` / `Set` key; int/float/string/bool/enum and types implementing `Hashable` |
+| `Stringable` | callable via `.toString()`; almost every built-in type implements it by default |
+| `Iterable<T>` | usable in `for-in`; Array, Map, Json, string, Range, enum, types with custom `iterator()` |
+
+**Current limitations**:
+- Constraints may only follow type parameters; there is no `where` clause.
+- **Higher-kinded types** (`F<_>` as a parameter) are not supported.
+- Default type parameters (`<T = int>`) are not supported.
+- Interface implementation still requires **explicit `implements`** at the class declaration site (not at the constraint site; see §5.4).
+
+### 9.3 Type Inference and Explicit Instantiation
+
+#### Type inference
+
+```xray
+identity(42)                    // T inferred as int
+new Box("hello")                // T inferred as string
+new Pair("key", 100)            // K=string, V=int
+```
+
+The inference algorithm is **bidirectional**:
+- From arguments (call-site argument types → type parameters).
+- From the return type (contextual expected type → type parameters).
+
+#### Explicit instantiation
+
+When inference fails or precision is needed:
+
+```xray
+let empty = new Array<int>()              // no element to infer from
+let m = new Map<string, int>()
+let result = identity<float>(0)            // 0 defaults to int; force float
+```
+
+### 9.4 Specialization and Monomorphization
+
+**Implementation strategy**: compile-time monomorphization.
+
+- The compiler collects all concrete instantiation sites of generic functions/classes, generates a dedicated AST clone for each type combination, and compiles each into independent bytecode.
+- Name mangling: `identity<int>` → `identity$i64`, `Pair<string, int>` → `Pair$str$i64`.
+- Sharing by representation (rep-sharing): types with the same pointer representation share a single specialization (at most three versions: I64 / F64 / PTR).
+- Strict compile-time type checking ensures safety; concrete type-parameter information is retained at runtime for `Reflect.typeOf`.
+
+> Source of truth: `src/frontend/analyzer/xanalyzer_mono.c` (monomorphization pass), `xanalyzer_mono.h` (API).
+
+**Performance impact**:
+- Monomorphized generic functions can be optimized directly by JIT / AOT into native-typed operations (no boxing).
+- Built-in specialized containers (`Array<int>`, `Bytes`) further avoid boxing overhead.
+- Compiled binary size grows linearly with the number of instantiation combinations; the ceiling `XR_MONO_MAX_INSTANCES` prevents explosion.
+
+### 9.5 Protocols (Duck Typing) vs. Nominal Typing
+
+#### Nominal typing dominates
+
+Xray's interface implementations require **explicit `implements`** — unlike Go's "implicit interface implementation".
+
+```xray
+interface Drawable { draw() -> () }
+
+class Square implements Drawable {        // explicit implements required
+    draw() -> () { ... }
+}
+
+class Wrong {
+    draw() -> () { ... }
+}
+
+fn render(d: Drawable) { ... }
+render(new Square())     // OK
+render(new Wrong())      // compile error: Wrong is not Drawable
+```
+
+#### Structural objects
+
+Only `object literal` and `type T = {...}` use structural matching:
+
+```xray
+type Point = { x: float, y: float }
+
+fn describe(p: Point) { ... }
+
+describe({ x: 1.0, y: 2.0 })   // OK: literal matches structurally
+describe({ x: 1.0, y: 2.0, z: 3.0 })  // compile error: sealed type rejects extra fields
+```
+
+### 9.6 Variance
+
+Explicit variance annotations (`out T` / `in T`) are not currently supported. Default behavior:
+- Container types: **invariant** (`Array<Dog>` is not a subtype of `Array<Animal>`).
+- Function types: parameters contravariant, return values covariant (the standard rule).
+
+### 9.7 Generics and Runtime Reflection
+
+Because of monomorphization, every concrete instantiation has its own class/function definition at runtime, with type-parameter information retained:
+
+```xray
+class Container<T> {
+    items: Array<T>
+}
+let c = new Container<int>()
+print(Reflect.typeOf(c))       // "Container<int>"
+```
+
+Type checks on concrete values use `is` / `as`.
 <!-- /xr-spec:en -->

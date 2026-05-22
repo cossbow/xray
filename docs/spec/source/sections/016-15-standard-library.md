@@ -119,47 +119,112 @@ order: 016
 <!-- xr-spec:en -->
 ---
 
-## 15. Standard Library
+## 15. Standard Library Overview
 
-Native stdlib modules exported by C module loaders:
+> Source of truth: stdlib implementations and analyzer builtin metadata.
+> MCP knowledge fetches API signatures via `xray builtin-dump` and injects per-module knowledge cards at generation time.
+> See [Appendix D — stdlib module index](#d-stdlib-module-index).
 
-`base64`, `cluster`, `compress`, `crypto`, `csv`, `datetime`, `encoding`, `gc`, `http`, `io`, `log`, `math`, `net`, `os`, `path`, `regex`, `time`, `toml`, `url`, `ws`, `xml`, and `yaml`.
-
-Runtime/analyzer built-in modules also include `Coro`, `CoroPool`, and `Reflect`.
+> **Authoritative native module list** (22 modules; source: `stdlib/<module>/*.c`):
+>
+> `base64`, `cluster`, `compress`, `crypto`, `csv`, `datetime`, `encoding`, `gc`, `http`, `io`, `log`, `math`, `net`, `os`, `path`, `regex`, `time`, `toml`, `url`, `ws`, `xml`, `yaml`.
+>
+> Built-in types that need no import are registered by the prelude (`Array`, `Map`, `Set`, `Json`, `Channel`, `Bytes`, `BigInt`, `StringBuilder`, `Exception`, `Regex`, `Logger`, `NetConn`, `NetListener`, etc.); `Result<T, E>` is the built-in ADT enum used on error-handling paths. See §1.5.6 / §2.2.
 
 ### 15.1 File I/O and System
 
-| Module | APIs |
-|--|--|
-| `io` | file and stream I/O |
-| `path` | path manipulation |
-| `os` | environment, process, platform, sleep, exec |
+| Module | Topic | Key APIs |
+|--|--|--|
+| `io` | file I/O + filesystem | `readFile` `writeFile` `exists` `mkdir` `remove` `readdir` `stat` `stdin` `stdout` `stderr` |
+| `path` | path manipulation | `join` `dirname` `basename` `extname` `normalize` `isAbsolute` `resolve` `relative` `parse` `format` |
+| `os` | OS interface | `getenv` `setenv` `environ` `exit` `getpid` `getcwd` `chdir` `hostname` `tmpdir` `homedir` `cpuCount` `sleep` `exec`; constants `platform` `arch` `sep` `eol` |
+
+> Xray has **no** standalone `fs` module; filesystem operations live in `io`. Process arguments / process information are exposed through the global `process` object (`process.args` / `process.file` / `process.dir`, see §16.5), not `os`.
+> `os.platform` / `os.arch` / `os.sep` / `os.eol` are **constant strings** (no parentheses); other `os.*` are function calls.
 
 ### 15.2 Networking
 
-| Module | APIs |
-|--|--|
-| `net` | TCP/UDP/TLS and DNS-like lookup |
-| `http` | HTTP client/server helpers |
-| `ws` | WebSocket support |
-| `url` | URL parsing/formatting/query helpers |
+| Module | Topic | Key APIs |
+|--|--|--|
+| `net` | TCP / UDP / TLS sockets + DNS | `listen` `dial` `lookup` `Socket` `Listener` `hasTLS` |
+| `http` | HTTP / HTTPS client + server + HTTP/2 | `get` `post` `request` `Server` `urlEncode` `urlDecode` |
+| `ws` | WebSocket | client/server connections |
+| `url` | URL parsing and construction | `parse` `format` `parseQuery` `buildQuery` `encode` `decode` |
+
+> DNS lookups go through `net.lookup(host)`; there is no standalone `dns` module.
 
 ### 15.3 Data Formats
 
-| Module | APIs |
+| Module | Topic |
 |--|--|
-| `yaml` | YAML parsing/writing |
-| `toml` | TOML parsing/writing |
-| `xml` | XML parsing/writing |
-| `csv` | CSV parsing/writing |
-| `base64` | Base64 encoding/decoding |
-| `encoding` | generic encodings |
+| `yaml` | YAML |
+| `toml` | TOML |
+| `xml` | XML |
+| `csv` | CSV |
+| `base64` | Base64 encode / decode |
+| `encoding` | hex / UTF-8 and other generic encodings (Base64 lives in its own module) |
 
-JSON does not use a separate `json` module; use the built-in `Json` type static methods.
+> JSON encoding/decoding is **not** in a separate `json` module; use the built-in type `Json`'s static methods `Json.parse(s)` / `Json.stringify(v)` (no import required; see §14.10).
 
-### 15.4 Other Areas
+### 15.4 Cryptography and Hashing
 
-`crypto` handles hashing and crypto helpers. `compress` handles compression. `time` and `datetime` handle time. `math` provides math functions and constants. `log` provides structured logging. `gc` provides diagnostics/control. `cluster` provides distributed coordination helpers.
+| Module | Key APIs |
+|--|--|
+| `crypto` | `md5` `sha1` `sha256` `sha512` `hmac` `aes` `rsa` etc.; full API in stdlib source |
 
-Modules that do not exist as separate current stdlib modules include `fs`, `process`, `dns`, `random`, `strconv`, `sync`, `runtime`, and `json`.
+> stdlib has **no** standalone `random` module; for pseudo-random numbers use `crypto`'s random source or `math` utilities.
+
+### 15.5 Compression
+
+| Module | Key APIs |
+|--|--|
+| `compress` | `gzip` / `gunzip`, `deflate` / `inflate`, etc. |
+
+### 15.6 Time
+
+| Module | Key APIs |
+|--|--|
+| `time` | `now()` `monotonic()` `sleep(ms)` `Duration` |
+| `datetime` | `DateTime` / `Date` / `Time` parsing and formatting (see §14.12) |
+
+### 15.7 Math
+
+| Module | Key APIs |
+|--|--|
+| `math` | `sin` `cos` `tan` `log` `pow` `sqrt` `floor` `ceil` `round` `abs` `min` `max` etc.; constants `PI` / `E` / `MAX_INT` / `MIN_INT` |
+
+### 15.8 Text
+
+| Module | Key APIs |
+|--|--|
+| `regex` | `compile(pattern)` returns `Regex`; see §14.13. The `/pattern/flags` literal form is also supported |
+
+> stdlib has **no** `strconv` module; for string ↔ numeric conversions use the built-ins `int(s)` / `float(s)` / `string(n)` (see §13.2).
+
+### 15.9 Logging and Diagnostics
+
+| Module | Key APIs |
+|--|--|
+| `log` | `debug` / `info` / `warn` / `error` / `fatal` / `child()`, source-position toggles, async write mode |
+| `gc` | `collect()` `isrunning()` `count()` `state()` `stats()` |
+
+### 15.10 Distributed
+
+| Module | Topic |
+|--|--|
+| `cluster` | node discovery, health checks, topic-based message bus (see `stdlib/cluster/`) |
+
+### 15.11 Testing
+
+The `@test` attribute together with the global `assert*` family is enough; **no** separate `test` module is needed (see §12).
+
+### 15.12 Modules That **Do Not Exist**
+
+Modules that may have been referenced historically but are **not** part of the current stdlib (to avoid confusion):
+
+`fs` · `process` · `dns` · `random` · `strconv` · `sync` · `runtime` · `json`
+
+Their functionality has either moved into other modules (see the per-section notes above) or has not yet been implemented.
+
+> **Full index**: see [Appendix D](#d-stdlib-module-index).
 <!-- /xr-spec:en -->

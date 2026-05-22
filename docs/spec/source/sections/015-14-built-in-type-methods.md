@@ -214,73 +214,203 @@ order: 015
 
 ## 14. Built-in Type Methods
 
-### 14.1 Numeric and Bool Methods
+> Source of truth: prelude / analyzer / runtime built-in type registration and method definitions.
+> MCP knowledge only consumes the generated analyzer metadata; it does not maintain its own copy of built-in method signatures.
 
-`int`: `abs`, `toString`, `toBigInt`, `toFloat`, `toHex`, `max`, `min`, `floor`, `ceil`, `round`, `sqrt`, `pow`.
+This section is a **method index** for each type (grouped by topic). Concrete signatures, parameter descriptions, and behavioral details are governed by the implementation source.
 
-`float`: `abs`, `toString`, `toFixed`, `toInt`, `floor`, `ceil`, `round`, `sqrt`, `pow`.
+### 14.1 `int` Methods
 
-`BigInt`: `abs`, `toString`, `sign`, `isZero`, `isNegative`, `isPositive`, `toInt`, `toFloat`.
+| Method | Signature | Description |
+|--|--|--|
+| `abs()` | `() -> int` | absolute value |
+| `toString()` | `() -> string` | decimal string |
+| `toBigInt()` | `() -> BigInt` | convert to BigInt |
+| `toFloat()` | `() -> float` | convert to float |
+| `toHex()` | `() -> string` | hexadecimal string |
+| `max(other)` / `min(other)` | `(int) -> int` | binary max/min |
+| `floor()` / `ceil()` / `round()` | `() -> int` | for `int`, returns self |
+| `sqrt()` | `() -> float` | square root |
+| `pow(exp)` | `(float) -> float` | power |
 
-`bool`: `toString`.
+### 14.2 `float` Methods
 
-### 14.2 `string`
+| Method | Signature | Description |
+|--|--|--|
+| `abs()` | `() -> float` | absolute value |
+| `toString()` | `() -> string` | string conversion |
+| `toFixed(decimals?)` | `(int?) -> string` | fixed-decimal string |
+| `toInt()` | `() -> int` | convert to int |
+| `floor()` / `ceil()` / `round()` | `() -> int` | rounding |
+| `sqrt()` | `() -> float` | square root |
+| `pow(exp)` | `(float) -> float` | power |
 
-Supported members include `length`, `charAt`, `charCodeAt`, `concat`, `includes`, `indexOf`, `lastIndexOf`, `slice`, `substring`, `substr`, `toLowerCase`, `toUpperCase`, `trim`, `trimStart`, `trimEnd`, `split`, `replace`, `replaceAll`, `repeat`, `startsWith`, `endsWith`, `padStart`, `padEnd`, `match`, `iterator`, `entriesIterator`, and `entries`.
+### 14.3 `BigInt` Methods
 
-### 14.3 `Bytes`
+| Method | Signature | Description |
+|--|--|--|
+| `abs()` | `() -> BigInt` | absolute value |
+| `toString()` | `() -> string` | string conversion |
+| `sign()` | `() -> int` | -1 / 0 / 1 |
+| `isZero()` / `isNegative()` / `isPositive()` | `() -> bool` | sign predicates |
+| `toInt()` | `() -> int?` | returns null when not representable as `int` |
+| `toFloat()` | `() -> float` | convert to float |
 
-`Bytes` is a prelude byte-buffer type. Construction is handled by builtin paths such as `Bytes(n)` and `Bytes(n, fill)`. Encoding/decoding helpers live in modules such as `encoding` and `base64`.
+### 14.4 `bool` Methods
 
-### 14.4 `Array<T>`
+| Method | Signature | Description |
+|--|--|--|
+| `toString()` | `() -> string` | returns `"true"` or `"false"` |
 
-Supported members include `length`, indexing, `push`, `pop`, `shift`, `unshift`, `slice`, `splice`, `concat`, `indexOf`, `includes`, `join`, `reverse`, `sort`, `map`, `filter`, `reduce`, `forEach`, `find`, `findIndex`, `every`, `some`, `flat`, `fill`, `copyWithin`, `iterator`, `entriesIterator`, and `entries`.
+### 14.5 `string` Methods
 
-### 14.5 `Map<K, V>`
+| Member | Type / Description |
+|--|--|
+| `length` | string-length property |
+| `charAt(i)` | character at the given index |
+| `charCodeAt(i)` | code point at the given index |
+| `concat(...others)` | concatenate strings |
+| `includes(s)` | substring containment test |
+| `indexOf(s)` / `lastIndexOf(s)` | substring search |
+| `slice(start, end?)` / `substring(start, end?)` / `substr(start, len?)` | substrings |
+| `toLowerCase()` / `toUpperCase()` | case conversion |
+| `trim()` / `trimStart()` / `trimEnd()` | whitespace trimming |
+| `split(sep, limit?)` | split into `Array<string>` |
+| `replace(from, to)` / `replaceAll(from, to)` | replacement |
+| `repeat(n)` | repeat |
+| `startsWith(s)` / `endsWith(s)` | prefix/suffix check |
+| `padStart(len, pad?)` / `padEnd(len, pad?)` | padding |
+| `match(pattern)` | regex match |
+| `iterator()` / `entriesIterator()` / `entries()` | iteration protocol |
 
-Supported members include `length`, indexing, `get`, `set`, `has`, `delete`, `clear`, `keys`, `values`, `entries`, `forEach`, `iterator`, and `entriesIterator`.
+### 14.6 `Bytes`
 
-Map literals are written with a `#` prefix and colon entries:
+`Bytes` is a prelude type; construction is handled via builtin paths such as `Bytes(n)` / `Bytes(n, fill)`. String conversion and encoding-related operations should prefer the `encoding` / `base64` modules. There is currently no separate `stdlib/types/bytes.xr` declaration; tooling should not assume a complete Array-isomorphic API.
 
-```xray
-let m = #{"k": 1}
-```
+### 14.7 `Array<T>` Methods
 
-### 14.6 `Set<T>`
+| Member | Type / Description |
+|--|--|
+| `length` | `int` property |
+| `arr[i]` / `arr[i] = v` | indexed read/write |
+| `push(x)` / `pop()` | tail insert/remove |
+| `shift()` / `unshift(x)` | head insert/remove |
+| `slice(start?, end?)` | slicing |
+| `splice(start, deleteCount, ...items)` | in-place insert/remove |
+| `concat(...arrays)` | concatenation |
+| `indexOf(x)` / `includes(x)` | search |
+| `join(sep?)` | concatenate into a string |
+| `reverse()` / `sort(cmp?)` | in-place reorder |
+| `map(fn)` / `filter(fn)` / `reduce(fn, init)` | functional helpers |
+| `forEach(fn)` / `find(fn)` / `findIndex(fn)` / `every(fn)` / `some(fn)` | traversal and predicates |
+| `flat(depth?)` / `fill(v, start?, end?)` / `copyWithin(target, start, end?)` | array utilities |
+| `iterator()` / `entriesIterator()` / `entries()` | iteration protocol |
 
-Supported members include `length`, `add`, `has`, `delete`, `clear`, `values`, `forEach`, and `iterator`.
+### 14.8 `Map<K, V>` Methods
 
-Set literals use `#[...]`.
+| Member | Type / Description |
+|--|--|
+| `length` | `int` property |
+| `m[k]` / `m[k] = v` | indexed read/write |
+| `get(k)` / `set(k, v)` | read/write |
+| `has(k)` / `delete(k)` / `clear()` | query and remove |
+| `keys()` / `values()` / `entries()` | keys, values, key/value pairs |
+| `forEach(fn)` | traversal |
+| `iterator()` / `entriesIterator()` | iteration protocol |
 
-### 14.7 `Json`
+**Map literal**: `#{"k1": v1, "k2": v2}` or `#{}`; entries use `:`, distinguished from Object/Json literals by the `#` prefix.
 
-Json field data is accessed with normal field/index syntax. Generic utility functions are static methods on `Json`:
+### 14.9 `Set<T>` Methods
 
-`keys`, `values`, `entries`, `has`, `get`, `size`, `isEmpty`, `parse`, `tryParse`, `isValid`, and `stringify`.
+| Member | Type / Description |
+|--|--|
+| `length` | `int` property |
+| `add(x)` / `has(x)` / `delete(x)` | insert, query, remove |
+| `clear()` | empty the set |
+| `values()` | returns `Array<T>` |
+| `forEach(fn)` | traversal |
+| `iterator()` | iteration protocol |
 
-### 14.8 `Channel<T>`
+**Set literal**: `#[1, 2, 3]` or `#[]`.
 
-Methods: `send`, `recv`, `trySend`, `tryRecv`, `sendTimeout`, `recvTimeout`, `close`, and `isClosed`/`isClosed()`.
+### 14.10 `Channel<T>` Methods
 
-### 14.9 `DateTime`
+| Member | Type / Description |
+|--|--|
+| `send(v)` | blocking send; throws if the channel is closed |
+| `recv()` | blocking receive; returns `null` when closed and the buffer is empty |
+| `trySend(v)` | non-blocking send, returns bool |
+| `tryRecv()` | non-blocking receive, returns `(T, bool)` |
+| `sendTimeout(v, ms)` | timed send; returns false on timeout/close |
+| `recvTimeout(ms)` | timed receive; returns `(T, bool)` |
+| `close()` | close the channel |
+| `isClosed` / `isClosed()` | closed state; both runtime property and method are supported |
 
-`DateTime` instances provide component properties (`year`, `month`, `day`, `hour`, `minute`, `second`, `millisecond`, `weekday`, `yearday`, `timestamp`) and methods (`toString`, `format`, `toISOString`, `add`, `diff`, `toUTC`, `toLocal`, `isBefore`, `isAfter`, `equals`, `isLeapYear`, `daysInMonth`).
+> `stdlib/types/channel.xr` still declares a `closed` property, but the runtime symbol table and VM dispatch use `isClosed`; this declaration drift is recorded as a known issue.
 
-The `datetime` module exports factory functions: `now`, `utc`, `create`, `createUTC`, `fromTimestamp`, `fromTimestampMs`, `parse`, and `offset`.
+### 14.11 `Json`
 
-### 14.10 `Regex`
+`Json` is a dynamic structured-data type. Ordinary field access uses `j.field` / `j["field"]`; generic queries and serialization go through `Json` static functions to avoid colliding with user field names.
 
-Methods: `test`, `find`, `findAll`, `replace`, and `split`.
+| Static function | Description |
+|--|--|
+| `Json.keys(obj)` / `Json.values(obj)` / `Json.entries(obj)` | enumerate object fields |
+| `Json.has(obj, key)` | field existence |
+| `Json.get(obj, key, default?)` | field read; returns `default` or `null` if absent |
+| `Json.size(obj)` | number of fields |
+| `Json.isEmpty(obj)` | emptiness predicate |
+| `Json.parse(s)` / `Json.tryParse(s)` / `Json.isValid(s)` | JSON parsing and validation |
+| `Json.stringify(value, indent?)` | serialization |
 
-### 14.11 `StringBuilder`
+**Literal**: `{ name: "alice", age: 30 }` has dynamic type `Json`. For sealed objects, annotate with `type T = { name: string, age: int }`.
 
-Members: `length`, `append`, `toString`, and `clear`.
+### 14.12 `Range`
 
-### 14.12 `Exception`, `Task`, and Enum Runtime Types
+`a..b` is the half-open interval `[a, b)`, used in expressions and `for-in`. Common members: `start`, `end`, `length`, `includes(x)`, `toArray()`, `toString()`.
 
-`Exception` exposes `message`, `stack`, `cause`, `code`, `data`, and `toString()`.
+### 14.13 `DateTime`
 
-`Task<T>` exposes `done`, `cancelled`, `result`, `error`, and `cancel()`.
+The `import datetime` module provides factory functions: `now`, `utc`, `create`, `createUTC`, `fromTimestamp`, `fromTimestampMs`, `parse`, `offset`. `DateTime` instances are registered by the prelude, so the type name need not be imported.
 
-`EnumValue` exposes `name`, `value`, `ordinal`, and `toString()`. `EnumType` exposes `name`, `memberCount`, and `getMember(name)`.
+| Member | Type / Description |
+|--|--|
+| `year` / `month` / `day` | date-component properties |
+| `hour` / `minute` / `second` / `millisecond` | time-component properties |
+| `weekday` / `yearday` / `timestamp` | derived properties |
+| `toString()` / `format(pattern?)` / `toISOString()` | formatting |
+| `add(amount, unit)` / `diff(other, unit?)` | date arithmetic |
+| `toUTC()` / `toLocal()` | timezone conversion |
+| `isBefore(other)` / `isAfter(other)` / `equals(other)` | comparison |
+| `isLeapYear()` / `daysInMonth()` | calendar queries |
+
+### 14.14 `Regex`
+
+| Method | Description |
+|--|--|
+| `test(s)` | match predicate |
+| `find(s)` | first match |
+| `findAll(s)` | all matches |
+| `replace(s, replacement)` | replacement |
+| `split(s)` | split |
+
+### 14.15 `StringBuilder`
+
+| Method | Description |
+|--|--|
+| `length` | current length property |
+| `append(s)` | append and return self |
+| `toString()` | output string |
+| `clear()` | empty and return self |
+
+### 14.16 `Exception`
+
+The built-in `Exception` class has fields `message`, `stack`, `cause`, `code`, `data`, the constructor `constructor(message: string = "", cause: Exception? = null)`, and `toString()`.
+
+### 14.17 `Task<T>` / `EnumValue` / `EnumType`
+
+`Task<T>` properties: `done`, `cancelled`, `result`, `error`; methods: `cancel()`. `EnumValue` properties: `name`, `value`, `ordinal`; methods: `toString()`. `EnumType` properties: `name`, `memberCount`; methods: `getMember(name)`.
+
+### 14.18 Other Prelude Types (`Logger` / `NetConn` / `NetListener`)
+
+These types are registered by the prelude; instances are constructed by factory functions in modules such as `log` / `net`. The complete runtime capability follows the corresponding stdlib module.
 <!-- /xr-spec:en -->

@@ -41,28 +41,30 @@ order: 023
 
 ## Appendix D. Standard Library Module Index
 
+The full set of 22 native modules is documented in [§15](#15-standard-library-overview).
+
 | Module | Purpose |
 |--|--|
-| `base64` | Base64 |
-| `cluster` | distributed coordination |
-| `compress` | compression |
-| `crypto` | hashing/crypto |
-| `csv` | CSV |
-| `datetime` | DateTime factories |
-| `encoding` | encoding helpers |
-| `gc` | GC control/diagnostics |
-| `http` | HTTP |
-| `io` | file/stream I/O |
-| `log` | logging |
-| `math` | math |
-| `net` | networking |
-| `os` | OS/environment/process |
-| `path` | paths |
-| `regex` | regex utilities |
-| `time` | time/sleep |
-| `toml` | TOML |
-| `url` | URL |
+| `base64` | Base64 encode/decode |
+| `cluster` | distributed cluster |
+| `compress` | compression (gzip/zlib/deflate) |
+| `crypto` | cryptographic hashes |
+| `csv` | CSV parsing/serialization |
+| `datetime` | date and time |
+| `encoding` | character encoding conversion |
+| `gc` | GC control |
+| `http` | HTTP/REST |
+| `io` | file I/O |
+| `log` | structured logging |
+| `math` | math functions |
+| `net` | TCP/UDP/TLS |
+| `os` | operating system |
+| `path` | path manipulation |
+| `regex` | regular expressions |
+| `time` | time / timer / sleep |
+| `toml` | TOML parsing |
+| `url` | URL parsing/construction |
 | `ws` | WebSocket |
-| `xml` | XML |
-| `yaml` | YAML |
+| `xml` | XML parsing |
+| `yaml` | YAML parsing |
 <!-- /xr-spec:en -->

@@ -82,46 +82,71 @@ BigInt 使用 `123n` 字面量或 `int.toBigInt()`；Json 使用 `Json.parse` / 
 
 ## 13. Built-in Functions
 
+> Source of truth: `src/ir/xi_lower_expr.c`, `src/vm/xvm_dispatch_*.inc.c`, `src/runtime/object/builtins/`, `src/frontend/analyzer/xanalyzer_builtins.c`.
+
+These global functions and built-in constructor/static functions are usable without any `import`. In the tables below, `value` denotes "any runtime value" — it is **not** a writable `any` type; xray no longer has an `any` type in the source language.
+
 ### 13.1 I/O and Debugging
 
-| Function | Signature | Meaning |
+| Function | Signature | Description |
 |--|--|--|
-| `print` | `(...values) -> ()` | print to stdout with trailing newline |
+| `print` | `(...values) -> ()` | print to stdout, automatically appending a newline; multiple arguments are separated by spaces |
 | `dump` | `(value, indent?) -> ()` | structured debug output |
 
-### 13.2 Conversion
+### 13.2 Type Conversion
 
-| Function | Signature | Meaning |
+| Function | Signature | Description |
 |--|--|--|
-| `int(x)` | `(value) -> int` | convert to int |
+| `int(x)` | `(value) -> int` | convert to int; throws if string parsing fails |
 | `float(x)` | `(value) -> float` | convert to float |
 | `string(x)` | `(value) -> string` | convert to string |
-| `bool(x)` | `(value) -> bool` | convert to bool |
-| `chr(n)` | `(int) -> string` | code point to string |
-| `copy(x)` | `(T) -> T` | deep copy |
+| `bool(x)` | `(value) -> bool` | convert to bool; rules in §2.4.1 |
+| `chr(n)` | `(int) -> string` | Unicode code point → single-character string |
+| `copy(x)` | `(T) -> T` | deep copy, preserving runtime type |
 
-### 13.3 Type Inspection
+### 13.3 Type Checking
 
-| Function | Signature | Meaning |
-|--|--|--|
-| `typeof(x)` | `(value) -> string` | runtime type name |
-| `x is T` | expression | runtime type check and possible narrowing |
+| Function / expression | Signature | Description |
+|---|---|---|
+| `typeof(x)` | `(value) -> string` | returns the runtime type-name string |
+| `x is T` | expression | runtime type check; the analyzer may narrow types |
 
-### 13.4 Assertions
+```xray
+let x = 42
+print(typeof(x))                // "int"
+print(x is int)                 // true
+print(typeof(x) == "int")       // true
+```
 
-`assert`, `assert_true`, `assert_false`, `assert_eq`, `assert_ne`, and `assert_throws` are global builtins.
+### 13.4 Coroutines
 
-### 13.5 Constructors and Static Functions
+Coroutine launch and waiting are syntax, not global functions: `go`, `await`, `await all`, `await any`, `await anySuccess`. For sleeping, use `time.sleep(ms)`.
 
-| API | Meaning |
+### 13.5 Assertions (for testing)
+
+| Function | Signature | Description |
+|---|---|---|
+| `assert(cond, msg?)` | `(bool, string?) -> ()` | throws when `cond` is false |
+| `assert_true(cond)` | `(bool) -> ()` | equivalent to `assert(cond)` |
+| `assert_false(cond)` | `(bool) -> ()` | equivalent to `assert(!cond)` |
+| `assert_eq(a, b)` | `(T, T) -> ()` | deep-equal assertion |
+| `assert_ne(a, b)` | `(T, T) -> ()` | deep-not-equal assertion |
+| `assert_throws(fn)` | `(fn) -> ()` | expects the function to throw |
+
+### 13.6 Container Constructors and Static Functions
+
+| Function | Description |
 |--|--|
-| `Array()` / `Array(n)` / `Array(n, value)` | create arrays |
-| `Array.from(iterable)` | create from string/array/set/map |
-| `Array.range(start, end)` | inclusive integer array |
-| `Array.withCapacity(n)` | allocate capacity with length 0 |
-| `Map()` | create empty map |
-| `Map.from(entries)` / `Map.from(keys, values)` | create maps |
-| `Set()` / `Set(array)` | create sets |
-| `Set.from(iterable)` | create set from iterable |
-| `Set.range(start, end)` | inclusive integer set |
+| `Array()` / `Array(n)` / `Array(n, value)` | create an empty array, an array of given length, or a value-filled array |
+| `Array.from(iterable)` | create an array from a string / Array / Set / Map |
+| `Array.range(start, end)` | inclusive integer array `[start, ..., end]` |
+| `Array.withCapacity(n)` | array with `length=0` and `capacity=n` |
+| `Map()` | empty Map |
+| `Map.from(entries)` | Map from `[key, value]` pair array |
+| `Map.from(keys, values)` | Map from key array and value array |
+| `Set()` / `Set(array)` | empty Set or Set from an array |
+| `Set.from(iterable)` | Set from a string / Array / Set |
+| `Set.range(start, end)` | inclusive integer Set |
+
+BigInt uses the `123n` literal or `int.toBigInt()`; Json uses `Json.parse` / `Json.stringify`; DateTime uses factory functions in the `datetime` module.
 <!-- /xr-spec:en -->

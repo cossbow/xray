@@ -51,19 +51,40 @@ order: 025
 
 ## Appendix F. Glossary
 
-| Term | Meaning |
+| Term | Definition |
 |--|--|
-| AOT | Ahead-of-time compilation |
-| AST | Abstract syntax tree |
-| Channel | Typed coroutine communication pipe |
-| Closure | Function value capturing outer variables |
-| Coroutine | User-space schedulable execution unit |
-| GC | Garbage collection |
-| JIT | Just-in-time compilation |
-| Nullable | Type that can contain `null` |
-| Pattern | Match/destructuring form |
-| Prelude | Built-in symbols available without import |
-| Safepoint | Point where coroutine/GC scheduling can observe execution |
-| SSA | Static single assignment IR |
-| VM | Bytecode virtual machine |
+| **AOT** | Ahead-of-Time compilation: precompiles to machine code at build time |
+| **AST** | Abstract Syntax Tree: intermediate representation produced by the parser |
+| **Arena** | Bulk allocator: every allocation is freed together |
+| **Bytes** | Byte buffer type (see §2.4.5) |
+| **Channel** | Typed inter-coroutine communication pipe (see §10.5) |
+| **closure** | Function value that captures outer variables |
+| **coroutine** | User-space, suspendable/resumable execution flow |
+| **defer** | Deferred execution: runs before function exit (see §4.9) |
+| **enum** | Enumeration type (see §5.6) |
+| **GC** | Garbage Collector |
+| **GC-safepoint** | Instruction location at which the GC may safely begin |
+| **goroutine** | Equivalent of xray coroutine; launched via `go {...}` |
+| **hoisting** | Implicit declaration of a name before its first use |
+| **IC** | Inline Cache: optimization of property/method dispatch |
+| **interface** | Interface type (see §5.5) |
+| **JIT** | Just-In-Time compilation: compiles hot paths at runtime |
+| **lvalue / rvalue** | Assignable left-hand-side value vs. value-only right-hand-side |
+| **monomorphization** | Specializing generics into concrete-type versions (xray does not do this) |
+| **move** | Ownership transfer: enforced when crossing coroutine boundaries (see §7.3) |
+| **NaN-boxing** | Storing tagged values inside the unused bits of an IEEE-754 NaN |
+| **nullable** | A nullable type `T?` whose value may be `null` |
+| **pattern** | A pattern used in `match` and destructuring (see §6) |
+| **scope** | Lexical scope |
+| **shared** | Storage class for cross-coroutine sharing (see §5.1.3) |
+| **SSA** | Static Single Assignment: IR where each variable is assigned only once |
+| **struct** | Value-type class (see §5.4) |
+| **TCO** | Tail-Call Optimization |
+| **trait** | Rust terminology; xray uses `interface` |
+| **truthy** | A value treated as true in control flow when it is not `false` / `null` / `0` / `""` / an empty collection (see §2.3.3) |
+| **monomorphization** | Specializing generic type parameters at compile time into concrete versions while retaining runtime type information |
+| **union** | Union type `A \| B` |
+| **upvalue** | Outer variable captured by a closure |
+| **VM** | Virtual Machine: xray bytecode VM |
+| **write barrier** | Hook inserted by the GC on pointer updates |
 <!-- /xr-spec:en -->

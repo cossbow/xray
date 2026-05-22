@@ -80,31 +80,69 @@ Bytecode  →  AOT (machine code)
 
 ## 17. Compilation Pipeline
 
-Pipeline:
+> Source of truth: `src/frontend/`, `src/vm/`, `src/jit/`, `src/aot/`, `docs/rules/architecture.md`.
 
-```text
-source
-  -> lexer
-  -> tokens
-  -> parser
-  -> AST
-  -> analyzer/type checker
-  -> typed AST
-  -> IR/lowering
-  -> bytecode
-  -> VM / JIT / AOT
+### 17.1 Pipeline Overview
+
+```
+Source (.xr)
+    ↓ lexer
+Token stream
+    ↓ parser
+AST
+    ↓ analyzer (semantic analysis, type checking, scope/capture/generic)
+Typed AST
+    ↓ ssa-gen
+SSA IR
+    ↓ optimize (const fold, DCE, inline, TCO, escape analysis)
+Optimized SSA
+    ↓ codegen
+Bytecode  →  AOT (machine code)
+    ↓ VM
+    ↓ Profiler → JIT (machine code)
+Execution
 ```
 
-Primary implementation areas:
+### 17.2 Lexical Analysis (Lexer)
 
-| Area | Directory |
-|--|--|
-| Lexer/parser | `src/frontend/lexer`, `src/frontend/parser` |
-| Analyzer | `src/frontend/analyzer` |
-| IR/lowering | `src/ir` |
-| VM | `src/vm` |
-| JIT | `src/jit` |
-| AOT | `src/aot` |
-| Runtime objects | `src/runtime` |
-| Stdlib native modules | `stdlib` |
+- Source of truth: `src/frontend/lexer/xlexer.c`.
+- Outputs an `XrToken` stream; each token carries `kind`, `value`, `pos(line, col)`.
+- Handles: string interpolation (producing `${...}` concatenation sequences), raw strings, regex literals.
+
+### 17.3 Syntax Analysis (Parser)
+
+- Source of truth: `src/frontend/parser/` (split by file: expr, stmt, decl, match).
+- Style: hand-written Pratt parser (expressions) + recursive descent (declarations / statements).
+- Error recovery: after an error, jumps to the next synchronization point (`;` `}` `)`) and tries to keep parsing.
+- Output: an `XrAstNode*` root (i.e., the module).
+
+### 17.4 Semantic Analysis (Analyzer)
+
+- Source of truth: `src/frontend/analyzer/xanalyzer_*.c` (split by topic).
+- **Scoping**: nested symbol tables, name resolution, shadowing checks.
+- **Type checking**: bidirectional type inference, union narrowing, Json structural matching.
+- **Generics**: monomorphization, constraint checking, call-site rewriting.
+- **Closure analysis**: upvalue tagging, `go` closure capture restrictions.
+- **Error codes**: the `XR_ERR_ANALYZE_*` family.
+
+### 17.5 SSA and Optimization
+
+- Source of truth: `src/ir/xi_opt*.c`, `src/ir/xi_pass.h`, `src/jit/`.
+- **Constant folding**: compile-time evaluation.
+- **DCE** (dead-code elimination): removes unused code.
+- **Inlining**: small-function inlining.
+- **TCO** (tail-call optimization): converts accumulator-style tail recursion into loops.
+- **Escape analysis**: stack-vs-heap allocation decisions.
+
+### 17.6 Bytecode and VM
+
+- Source of truth: `src/vm/`, `include/xray_opcodes.h`.
+- A hybrid register/stack VM.
+- IC (inline cache) accelerates property access and method dispatch.
+
+### 17.7 JIT and AOT
+
+- **JIT** (runtime): once a hot function is selected by the profiler → it is compiled into native machine code. Source: `src/jit/`.
+- **AOT** (ahead-of-time): `xray build --aot` → the entire module is compiled into a native binary. Source: `src/aot/`.
+- They share the same SSA IR; only the back-end differs (interpret / JIT / AOT).
 <!-- /xr-spec:en -->

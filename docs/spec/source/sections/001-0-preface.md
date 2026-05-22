@@ -87,49 +87,76 @@ Xray 是一个**轻量级静态类型脚本语言，原生支持并发**。设�
 
 ## 0. Preface
 
-### 0.1 Scope
+### 0.1 About This Specification
 
-This document is the reference manual for the Xray programming language. It describes the implemented lexical grammar, syntax, type system, expression and statement semantics, declarations, patterns, module system, concurrency model, error handling model, built-in APIs, standard library surface, runtime model, compilation pipeline, and error-code conventions.
+This document is the **reference manual** for the Xray programming language. It describes the lexical structure, syntax, type system, semantics, concurrency model, runtime, and standard-library surface. Its goals are:
 
-The goals are:
+1. Allow a human reader to write valid Xray code with predictable behavior.
+2. Serve as a **structured source of truth** for compilers, analyzers, IDEs, AI assistants, documentation generators, and other tooling.
+3. Stay aligned with the actual implementation in the main `xray` repository — any divergence is a bug in either the document or the code.
 
-1. A human reader can write valid Xray code with predictable behavior.
-2. Compiler, analyzer, IDE, LSP, documentation, and AI tooling can use this as a structured reference.
-3. The document stays aligned with the main repository implementation.
-
-This manual is not a tutorial. Runnable examples are under `demos/`; regression and behavioral examples are under `tests/`.
+**This manual is not a tutorial.** For introductory material, see the Xray website and the `demos/` directory.
 
 ### 0.2 Versioning
 
-The spec version follows the repository version in `CMakeLists.txt`, `project(Xray VERSION x.y.z)`. Xray is still in the `0.x` series; backward compatibility is not guaranteed.
+The version of this manual is kept in strict lock-step with the main `xray` repository (the `project(Xray VERSION x.y.z)` line in `CMakeLists.txt`). Major breaking changes are noted in-section as "since vX.Y.Z".
 
-### 0.3 Design Philosophy
+Xray is currently in the `v0.x` series. **No backward compatibility is promised.** Each release of the spec may introduce breaking changes.
 
-Xray is a lightweight statically typed scripting language with native concurrency.
+### 0.3 Language Design Philosophy
+
+Xray is a **lightweight statically typed scripting language with native concurrency support**. Design goals:
 
 | Dimension | Choice |
 |--|--|
-| Types | Static types plus local inference; source-level `any` is not available. |
-| Concurrency | M:N coroutines, `go`, `await`, `Channel<T>`, `select`, and structured `scope`. |
-| Execution | VM, JIT, and AOT execution modes share the same semantics. |
-| Errors | Exceptions, `try?`, `try!`, `catch!`, nullable values, Result-style ADTs, and `defer`. |
-| Interop | Native modules are implemented in C and loaded through the runtime module ABI. |
-| Tooling | The parser/analyzer/runtime source is the ground truth for syntax and behavior. |
+| **Types** | Static typing + type inference; declarations rarely require explicit type annotations, but the type system is fully visible at compile time |
+| **Concurrency** | Built-in M:N coroutines (go / await / Channel / scope / select); concurrency safety is enforced at compile time by the "explicit sharing" rules |
+| **Execution** | VM interpreter / JIT / AOT — all transparent to the developer; semantics are strictly identical across modes |
+| **Error handling** | Exception machinery (throw / try / catch / finally) + `Result<T,E>` + nullable types (T?) + `defer`-based resource management |
+| **Metaprogramming** | Attributes (`@test` / `@native` / `@deprecated`) + runtime reflection (Reflect) + reified generics |
+| **Interop** | C ABI is built-in; stdlib modules can be authored in C and exposed via `XR_DEFINE_BUILTIN` |
 
-Xray borrows ideas from TypeScript, Go, Rust, Swift, and Python, but it is not a clone of any of them.
+Design influences: TypeScript (type inference + nullable), Go (structured concurrency + Channel), Rust (a lightweight take on ownership/`move`), Swift (protocols + optional chaining). **Xray is not a clone of any of them.**
 
-### 0.4 Notation
+### 0.4 Reading Conventions
 
-EBNF notation in this document uses:
+#### 0.4.1 Grammar Notation
 
-| Notation | Meaning |
+This document uses a lightweight EBNF-style notation:
+
+| Symbol | Meaning |
 |--|--|
-| `Term` | non-terminal |
-| `'token'` | literal token |
+| `Term` | non-terminal (capitalised) |
+| `'literal'` | literal token |
 | `A B` | sequence |
-| `A | B` | choice |
+| `A \| B` | choice |
 | `A?` | optional |
 | `A*` | zero or more |
 | `A+` | one or more |
 | `(A)` | grouping |
+
+The complete EBNF is in [Appendix A](#appendix-a-ebnf).
+
+#### 0.4.2 Source-Code References
+
+This document references the main `xray` repository extensively as its source of truth. Citation format:
+
+```
+path:lineno
+```
+
+Examples: `src/frontend/lexer/xkeywords.def`, `src/frontend/parser/xast_types.h:42-58`.
+
+#### 0.4.3 Status Markers
+
+| Marker | Meaning |
+|--|--|
+| **Stable** | default state; behavior will not change without notice |
+| **Experimental** | implementation exists but may change |
+| **Reserved** | keyword/syntax recognized but currently disabled |
+| **Unimplemented** | described in the spec but not yet supported in code; must be marked explicitly |
+
+#### 0.4.4 Error-Code References
+
+Error codes use the `E0xxx` format (e.g., `E0101`); the full list is in [Chapter 18](#18-error-code-reference). Source-level definitions are in `src/runtime/xerror_codes.h` and `src/runtime/xerror.h`.
 <!-- /xr-spec:en -->

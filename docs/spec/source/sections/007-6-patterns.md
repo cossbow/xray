@@ -190,13 +190,16 @@ let { name, age } = user
 
 ## 6. Patterns
 
-Patterns appear in `match` arms and destructuring.
+> Source of truth: `src/frontend/parser/xparse_match.c`, `src/runtime/value/x_value_match.c`.
+
+Patterns appear in `match` expressions/statements and in `let` destructuring.
 
 ### 6.1 Literal Patterns
 
 ```xray
 match (x) {
     0 -> "zero"
+    3.14 -> "pi"
     "hello" -> "greeting"
     true -> "yes"
     null -> "nothing"
@@ -204,54 +207,162 @@ match (x) {
 }
 ```
 
-### 6.2 Range Patterns
+- Matching uses the same semantics as `==`.
+- The `null` pattern matches only `null` itself.
+
+### 6.2 Range Patterns `a..b`
 
 ```xray
 match (age) {
     0..13 -> "child"
     13..20 -> "teen"
-    _ -> "adult"
+    20..65 -> "adult"
+    _ -> "senior"
 }
 ```
 
-### 6.3 Wildcards and Bindings
+- Half-open interval `[a, b)`; integer-only.
 
-`_` matches without binding. A bare identifier binds the matched value.
+### 6.3 Enum Patterns
 
-### 6.4 Tuple Patterns
+#### 6.3.1 Simple variants (no payload)
 
 ```xray
-match (pair) {
-    (0, y) -> y
-    (x, y) -> x + y
+match (color) {
+    Color.Red   -> "red",
+    Color.Green -> "green",
+    Color.Blue  -> "blue",
 }
 ```
 
-### 6.5 Type Patterns
+- Must be fully qualified as `EnumName.Variant`.
+
+#### 6.3.2 ADT variant (with payload) destructuring
+
+ADT variant patterns may destructure payload fields (positionally or by name):
+
+```xray
+// Positional destructuring
+match (event) {
+    NetEvent.Connected            -> print("connected"),
+    NetEvent.Disconnected(reason) -> print("by:", reason),
+    NetEvent.DataReceived(b)      -> process(b),
+    NetEvent.Error(code, msg)     -> log.error(code, msg),
+}
+
+// Result patterns (positional)
+match (result) {
+    Result.Ok(v)  -> print("got:", v),
+    Result.Err(e) -> print("failed:", e),
+}
+
+// Wildcards skip payload fields you don't care about
+match (event) {
+    NetEvent.Error(code, _) if (code >= 500) -> throw new Exception("server error: ${code}"),
+    _                                         -> continue,
+}
+
+// Nested destructuring
+match (msg) {
+    Result.Ok(NetEvent.DataReceived(bytes)) -> process(bytes),
+    Result.Err(e)                            -> log.error(e),
+    _                                         -> skip(),
+}
+```
+
+#### 6.3.3 Exhaustiveness check
+
+When `match` is performed on an ADT enum, the compiler runs **exhaustiveness analysis**:
+
+- If every variant is covered (including `_` as a catch-all), the check passes.
+- If a variant is missed, compilation fails with `E0371 XR_ERR_ANALYZE_MATCH_NOT_EXHAUSTIVE`, naming the missing variants.
+
+```xray
+enum NetEvent {
+    Connected,
+    Disconnected(reason: string),
+    DataReceived(bytes: Bytes),
+    Error(code: int, message: string),
+}
+
+match (event) {
+    NetEvent.Connected            -> "ok",
+    NetEvent.Disconnected(r)      -> "down: ${r}",
+    // ❌ E0371: missing variants DataReceived and Error; add `_ -> ...` as catch-all
+}
+```
+
+> Both simple enums (no payload) and ADT enums **require** exhaustiveness; including a `_` catch-all suffices to skip the check. Non-enum operands (such as `int`) are not subject to the check.
+
+### 6.4 Type Patterns `is T`
+
+```xray
+match (value) {
+    is int n -> "int: ${n}"       // bind the narrowed value
+    is string -> "a string"
+    is User u -> "user: ${u.name}"
+    _ -> "unknown"
+}
+```
+
+- Tests the dynamic type; optionally binds a narrowed variable.
+
+### 6.5 Guard Conditions `if`
 
 ```xray
 match (x) {
-    is string s -> s.length
-    is int n -> n
-    _ -> 0
-}
-```
-
-### 6.6 ADT Variant Patterns
-
-```xray
-match (result) {
-    Result.Ok(v) -> v
-    Result.Err(e) -> throw new Exception(string(e))
-}
-```
-
-### 6.7 Guards
-
-```xray
-match (n) {
-    x if (x > 0) -> "positive"
+    n if (n > 0 && n < 10) -> "small positive"
+    n if (n < 0) -> "negative"
     _ -> "other"
 }
 ```
+
+- The guard expression sits inside `if (...)` parentheses and is evaluated under truthy/falsy context (see §2.3.3, identical to `if` / `while`); explicit `bool` expressions are recommended for readability.
+- On guard failure, matching falls through to the next arm.
+
+### 6.6 Multi-value Patterns
+
+```xray
+match (x) {
+    1, 2, 3 -> "small"
+    Color.Red, Color.Yellow -> "warm"
+    _ -> "other"
+}
+```
+
+- Any sub-pattern matching is a success.
+
+### 6.7 Wildcard `_`
+
+- Matches any value without binding.
+- Typically used as the trailing default arm.
+- Usable in destructuring to skip positions: `let [_, b, _] = arr`.
+
+### 6.8 Variable-binding Patterns
+
+```xray
+match (http_status) {
+    200 -> "ok"
+    code if (code >= 400) -> "error: ${code}"
+    code -> "other: ${code}"
+}
+```
+
+- A bare `Identifier` always matches and binds the value.
+
+### 6.9 Destructuring Patterns
+
+```xray
+let [a, b, c] = some_array
+let (q, r) = divmod(17, 5)
+let { name, age } = user
+```
+
+See §5.1.5 for details. Within `match`, tuple and ADT-variant destructuring are currently supported; structural object/array destructuring is not part of the current `match` pattern syntax.
+
+### 6.10 Exhaustiveness and Match Failure
+
+- `match` over an enum expression is exhaustive (error code `E0371`, see §6.3.3).
+- Other operand types are not enforced; if no arm matches at runtime, an `Exception` with code `E0442` is raised (see §18.x).
+- Always providing a `_` fallback is recommended.
 <!-- /xr-spec:en -->

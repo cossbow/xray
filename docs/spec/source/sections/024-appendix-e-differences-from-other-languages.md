@@ -76,27 +76,65 @@ xray 在开发过程中借鉴了现有语言的许多优秀设计，但还是有
 
 ## Appendix E. Differences from Other Languages
 
-### JavaScript / TypeScript
+Xray draws inspiration from many existing languages but has notable differences worth highlighting.
 
-- Xray is statically typed; there is no source-level `any`.
-- `Map` literals use `#{...}`, not object syntax.
-- Imports are Xray-specific and do not support JS default import syntax.
-- Concurrency is coroutine/channel based, not Promise-based.
+### E.1 vs JavaScript / TypeScript
 
-### Go
+| Dimension | JS/TS | xray |
+|--|--|--|
+| Static typing | Optional in TS | **Mandatory** (`Json` is the only dynamic type) |
+| Numerics | Single `number` (double) | `int`, `float`, `BigInt` strictly distinguished |
+| Truthiness | truthy / falsy | truthy / falsy (similar to JS), but `bool` itself rejects implicit assignment from int/null |
+| `===` vs `==` | `===` strict, `==` weak (string↔number coercion) | `==`/`!=` is value equality (only int↔float promotion); `===`/`!==` requires both type and value to be strictly equal |
+| Closure capture | by reference | by reference (default); `go` closures are strictly restricted |
+| Objects | dynamic fields | dynamic by default; sealed once annotated `type T = {...}` |
+| import | ES Modules | xray-specific syntax (stdlib uses unquoted form) |
+| Concurrency | async / Promise | coroutines + channels |
 
-- Xray has classes, structs, interfaces, enums, exceptions, and nullable types.
-- `go` is an expression returning `Task<T>`.
-- Channels are `Channel<T>` objects with methods.
-- `select` uses `x from ch ->`, `v to ch ->`, `after ms ->`, and `_ ->` arms.
+### E.2 vs Go
 
-### Rust
+| Dimension | Go | xray |
+|--|--|--|
+| Type system | simple + implicit interfaces | richer + explicit `implements` |
+| Error handling | multiple return values + `err != nil` | exceptions + `Result<T,E>` + `try?`/`try!` |
+| Coroutines | `go func() {}` (statement) | `go expr` (expression returning `Task<T>`) |
+| Awaiting | no direct equivalent (channels/WaitGroup) | `await t`, `await all [...]`, `await any [...]` |
+| Channels | built-in `chan T`, `<-` operator | `Channel<T>` class with `send`/`recv`/`trySend`/`tryRecv` methods |
+| `select` arms | `case x := <-ch:` / `case ch <- v:` / `default:` | `x from ch ->` / `v to ch ->` / `after ms ->` / `_ ->` |
+| GC | concurrent tri-color | per-coroutine Mark-Sweep / Immix |
+| Classes / inheritance | none (struct + interface only) | classes with inheritance |
+| Generics | since 1.18 | yes, monomorphization + runtime reified |
 
-- Xray uses GC and explicit cross-coroutine sharing instead of a full borrow checker.
-- ADT enums and Result-style values are supported, but exceptions are also part of the language.
+### E.3 vs Rust
 
-### Swift
+| Dimension | Rust | xray |
+|--|--|--|
+| Memory safety | full borrow checker | only `move` across coroutines; otherwise GC |
+| Errors | `Result<T, E>` | exceptions + `Result<T,E>` |
+| Type inference | strong Hindley-Milner | bidirectional inference |
+| Traits | full | similar to `interface`, fewer features |
+| Performance | near C | VM/JIT, hot paths near native |
+| Compile-time | macros / const | simple constant folding |
 
-- Xray has `T?`, `try?`, and `try!`, but `try!` rethrows rather than aborting.
-- Concurrency is coroutine/channel based.
+### E.4 vs Python
+
+| Dimension | Python | xray |
+|--|--|--|
+| Typing | dynamic (optional hints) | static |
+| GIL | yes | none (M:N coroutines) |
+| Strings | unicode str | utf-8 string |
+| Indentation | mandatory | free-form (`{}`) |
+| Classes | dynamic attributes | static fields |
+| Performance | CPython slow | JIT close to V8/JVM |
+
+### E.5 vs Swift
+
+| Dimension | Swift | xray |
+|--|--|--|
+| Optional `?` | yes | yes |
+| `!` unwrap | yes | yes |
+| `try?` / `try!` semantics | `try?` collapses to nil; `try!` aborts on failure | `try?` collapses to null; `try!` **rethrows the original exception** (does not abort) |
+| struct vs class | value/reference | value/reference |
+| Protocols | strong | `interface`, weaker |
+| Concurrency | actors + async/await | coroutines + channels + `go`/`await all`/`scope` |
 <!-- /xr-spec:en -->

@@ -121,17 +121,110 @@ class Exception {
 
 ## 16. Runtime Model
 
-Xray values are represented by tagged runtime values and GC-managed heap objects. The runtime includes class descriptors, native body descriptors, arrays, maps, sets, tuples, strings, BigInts, Json objects, exceptions, tasks, coroutines, channels, and native handles.
+> Source of truth: `src/runtime/`, `src/vm/`, `docs/rules/gc-memory.md`, `docs/rules/architecture.md`.
 
-Memory regions include:
+### 16.1 Value Representation
 
-- System/native heap.
-- Global/shared heap.
-- Per-coroutine heap.
-- VM frames and stacks.
-- Parser/compiler arenas.
+Xray values are uniformly represented as `xray_value_t`. Layout strategy:
 
-Garbage collection is based on per-coroutine collection and shared-object handling. Safepoints include calls, backward branches, channel operations, `await`, `yield`, and explicit GC operations.
+- **NaN-boxing** (on 64-bit platforms): unused IEEE-754 NaN bit space encodes small integers, booleans, and pointer tags.
+- **Pointer tagging**: low-bit tags distinguish object kinds.
+- **Object references**: heap objects are referenced via tagged pointers; the current GC does not move objects.
 
-Coroutines are scheduled M:N over worker threads with cooperative safepoints and work stealing.
+| Value type | Internal representation |
+|--|--|
+| `int` | 53-bit immediate (NaN-box) |
+| `float` | double precision stored directly |
+| `bool` | tag |
+| `null` | single global value |
+| `string` | heap object + short-string inline (≤ 7 bytes) |
+| `Bytes` | heap object + capacity/length |
+| Other objects | heap pointer |
+
+### 16.2 Memory Allocation
+
+| Region | Use |
+|--|--|
+| **System heap** | C `malloc/free`, used for native data structures |
+| **Global heap** | `shared const` / `shared let`, refcount GC |
+| **Coroutine heap** | per-coroutine independent Mark-Sweep GC heap |
+| **Stack** | `struct` values, local immediates, function frames |
+| **Arena** | parser temporary allocation, frame allocation |
+
+### 16.3 GC Model
+
+- Default **per-coroutine Mark-Sweep / Immix Mark-Region**.
+- **Tri-color marking**: white (unvisited) / gray (pending) / black (scanned).
+- **Write barriers**: triggered when writing GC values into object fields, module fields, static fields, and containers; Sticky Immix uses a backward barrier to maintain young/old relationships.
+- **GC-safepoints**: function calls, backward branches, explicit `gc.collect()`.
+
+See `docs/rules/gc-memory.md` for details.
+
+### 16.4 Coroutine Scheduling
+
+- M:N scheduling (M OS threads × N coroutines).
+- **work-stealing**: idle workers steal tasks from other workers' queues.
+- **Cooperative preemption**: coroutines yield at safepoints (no forced preemption).
+- **Stack management**: segmented stacks grow on demand.
+
+See `src/runtime/coro/` for details.
+
+### 16.5 Process-Level Global Access
+
+- `process` (global builtin, no import required): self-process information.
+- `os` (requires `import os`): operating system, environment, process control.
+
+```xray
+// Self-process information — global object
+process.file              // current script path (equivalent to __file__)
+process.args              // Array<string>, process command-line arguments
+process.dir               // script directory (equivalent to __dir__)
+
+// OS / environment — requires import
+import os
+os.getenv("PATH")         // read environment variable -> string?
+os.environ()              // get all environment variables -> Map<string, string>
+os.exit(0)                // exit the process
+os.getpid()               // process ID
+os.getcwd()               // current working directory
+os.hostname()             // host name
+os.tmpdir()               // temporary directory
+os.platform               // constant: "darwin" / "linux" / "windows"
+os.arch                   // constant: "arm64" / "x64" / "x86"
+os.sep                    // constant: path separator
+os.eol                    // constant: end-of-line
+os.sleep(100)             // sleep in milliseconds (equivalent to `time.sleep`)
+```
+
+> **Naming convention**: `os.*` follows POSIX function names (`getenv` / `getcwd` / `getpid`); it does not track Node.js. Node-style `process.env` mapping is not provided — use `os.getenv(name)` / `os.environ()`.
+
+See `stdlib/os/` for details.
+
+### 16.6 Exception Runtime
+
+The built-in `Exception` class is a prelude type (declared in `stdlib/types/exception.xr`); users may directly `new` it or inherit from it:
+
+```xray
+@native
+class Exception {
+    message: string             // human-readable message
+    stack: Array<string>        // automatically captured call stack, one formatted line per frame
+    cause: Exception?           // chained cause
+    code: int                   // error code (auto-parsed from "E0xxx: ..." prefix; default 0)
+    data: Json?                 // when a non-exception value is thrown, the original value is wrapped here
+
+    constructor(message: string = "", cause: Exception? = null)
+    fn toString() -> string
+}
+```
+
+The operand of a `throw` expression must have a static type that is `Exception` or one of its subclasses (see §8.1.1); other types are rejected at compile time (error code `E0370`). Runtime errors thrown by the VM also use this `Exception` type.
+
+Stack unwinding: the VM's `xvm_unwind_stack()` walks the try-table to find catch handlers, releasing locals frame by frame and running `finally` / `defer` along the way before jumping to the catch. See §8 for details.
+
+### 16.7 Result Runtime
+
+`Result<T, E>` is a prelude ADT enum (see §8.2 / §5.6.2). Runtime representation: tag (1 byte) + payload. `Result.Ok(v)` and `Result.Err(e)` are value objects, and `match` destructuring is lowered at the IR level into tag-test + payload-extract.
+
+Because `Result` has zero overhead on the no-exception path (no throwing, no stack unwinding), code paths using `Result` perform the same as a tagged union.
 <!-- /xr-spec:en -->

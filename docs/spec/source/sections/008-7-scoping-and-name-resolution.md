@@ -187,16 +187,176 @@ Xray 采用多层内存管理：
 
 ## 7. Scoping and Name Resolution
 
-Each block creates a lexical scope. Declarations are resolved through lexical parent scopes and then module/prelude scopes as appropriate.
+> Source of truth: `src/frontend/analyzer/xanalyzer_scope.c`, `src/frontend/analyzer/xanalyzer_capture.c`.
 
-Functions may capture outer variables. Coroutines started with `go` use stricter capture rules to avoid accidental data races:
+### 7.1 Lexical Scoping and Hoisting
 
-- `shared const` may be captured directly.
-- Ordinary local variables cannot be captured directly by `go` closures.
-- Mutable shared state must be explicit and often transferred or synchronized.
-- Channels are the preferred communication mechanism.
+Xray uses **lexical scoping**: a name's visibility is determined entirely by the source code structure.
 
-Modules are private by default. Only exported declarations are visible to importers.
+**Scope kinds**:
 
-Circular module dependencies are rejected.
+| Scope | Triggered by | Example |
+|--|--|--|
+| Module | Each `.xr` file | top-level `let` `fn` `class` |
+| Function / closure | Entering `fn` / arrow function | parameters + function body |
+| Block | `{...}` | `if` `while` `for` `match` arm body |
+| `scope` block | `scope { ... }` keyword | explicit lexical scope + structured concurrency (see §10.7) |
+| `for` header | `for (let i=0; ...)` | `i` is visible only within the loop body |
+| `catch` parameter | `catch (e)` | `e` is visible only within the catch body |
+| Class body | `class` definition | fields, methods |
+
+**Hoisting rules**:
+
+- Top-level `fn` `class` `struct` `interface` `enum` `type` are **hoisted** to the top of the current scope — they may be referenced before their textual definition.
+- `let` / `const` are **not hoisted** — they must appear before any use.
+- Duplicate names: declaring two same-named variables in the same scope is a compile error (nested scopes may shadow).
+
+```xray
+main()                    // OK: uses the hoisted fn
+fn main() { ... }
+
+let y = x                 // error: x is not declared
+let x = 10
+```
+
+#### Shadow rules
+
+A nested block may shadow a same-named variable in an outer scope:
+
+```xray
+let x = 1
+{
+    let x = "hello"           // shadow: OK
+    print(x)                 // "hello"
+}
+print(x)                     // 1
+```
+
+### 7.2 Closure Capture Semantics
+
+A closure captures variables from outer scopes as **upvalues**.
+
+#### Plain synchronous closures
+
+The default capture mode is **by reference**:
+
+```xray
+fn make_counter() -> (() -> int) {
+    let count = 0
+    return fn() -> int {
+        count += 1                  // mutates the outer count
+        return count
+    }
+}
+
+let c = make_counter()
+print(c())      // 1
+print(c())      // 2
+```
+
+- The closure and the original variable **share state**.
+- After the outer scope exits, variables referenced by the closure are kept alive by the GC (promoted to the heap).
+
+#### Closure optimization
+
+The compiler analyzes upvalues:
+- read-only → may be implicitly copied (avoiding closure conversion).
+- read/write → promoted to a closure box.
+- See §17.5 for details.
+
+### 7.3 Ownership and `move`
+
+Xray is **not** a full ownership/borrow-checked language (unlike Rust). However, **cross-coroutine data transfer** uses move semantics:
+
+```xray
+shared let big_buffer = new Bytes(1024 * 1024)
+
+let t = go fn(b: Bytes) -> int {
+    return process(b)
+}(big_buffer)             // compile error: shared let cannot be passed directly, must move
+
+let t2 = go fn(b: Bytes) -> int {
+    return process(b)
+}(move big_buffer)        // OK: ownership transferred
+
+print(big_buffer.length)  // compile error: accessed after move
+```
+
+**`move` usage**: `move` appears as an **argument prefix** at call sites (see §10.8):
+
+- `go f(move x)`, `go fn(...){...}(move x)`: transfer ownership to the coroutine.
+- `ch.send(move data)`: transfer ownership when sending across coroutines (avoiding a copy).
+- Plain function call `f(move x)`: transfer ownership into the function (which becomes the sole owner).
+
+### 7.4 Cross-Coroutine Data Transfer Rules (Race Avoidance)
+
+"Statically eliminating data races at compile time" is a core design principle of xray's concurrency model.
+
+A coroutine launched by `go` **cannot directly capture** mutable variables from the outer scope; data must enter the coroutine through **parameter passing**. Plain variables are deep-copied automatically; `shared` variables follow the rules below:
+
+| Variable kind | Cross-coroutine transfer rule |
+|---|---|
+| Plain `let` / `const` (local) | **Deep-copied** automatically when passed as an argument; cannot be captured and mutated by closures |
+| Function parameters | ✅ Fully free (already copied / moved in) |
+| `shared const` | ✅ Zero-copy read-only sharing across coroutines (capturable by closures) |
+| `shared let` | ⚠️ Must transfer ownership with a `move` argument prefix; the original variable becomes inaccessible after the move |
+| `Channel<T>` | ✅ May be captured by closures (lifetime managed by the channel itself) |
+| `this` / mutable closure upvalues | ❌ Cannot cross coroutines; must be passed explicitly through parameters |
+| Globally imported functions/classes | ✅ Immutable definitions, freely referenceable |
+
+```xray
+let local = 0
+go { local += 1 }                        // ❌ compile error: cannot capture mutable local
+```
+
+#### Recommended patterns
+
+```xray
+// Pattern 1: pass by value (plain variables are deep-copied)
+let arr = [1, 2, 3]
+let t = go fn(data: Array<int>) -> int {
+    data.push(4)            // mutates the copy, original is unaffected
+    return data.length
+}(arr)
+print(arr)                  // [1, 2, 3] unchanged
+
+// Pattern 2: shared const, zero-copy read-only (capturable)
+shared const config = { rate: 100 }
+let t2 = go fn(c: Json) -> int {
+    return c.rate
+}(config)
+
+// Pattern 3: move ownership
+shared let big = new Bytes(1024)
+let t3 = go fn(b: Bytes) -> int {
+    return process(b)
+}(move big)
+// big is inaccessible from this point
+
+// Pattern 4: Channel communication (capturable)
+shared const ch = new Channel<int>(10)
+let t4 = go fn(c: Channel<int>) -> int {
+    return c.recv()
+}(ch)
+ch.send(42)
+```
+
+### 7.5 GC and Object Lifetimes
+
+Xray uses a layered memory management strategy:
+
+| Storage | Mechanism | Reclamation |
+|--|--|--|
+| Global heap (`shared const`) | refcount | when refcount reaches 0 |
+| Local heap (general objects) | Mark-Sweep GC | when unreachable |
+| Stack (`struct` values, locals) | RAII | when scope exits |
+| Arena (low-level temporary allocations) | bulk free | at arena end |
+
+**GC observation points**:
+- Default: incremental Mark-Sweep.
+- Mark phase traverses from the root set (globals, stack, registers).
+- Sweep phase reclaims unmarked objects.
+- The GC requires GC-safepoints; safepoints in the instruction stream include function calls, backward branches, and explicit `gc.collect()`.
+
+**Write barriers** and **generational GC** design: see `docs/rules/gc-memory.md`.
 <!-- /xr-spec:en -->
