@@ -77,13 +77,14 @@
 - 拒绝或忽略 `Content-Length` 输入。
 - runner stdout 不污染 MCP stdout 协议流。
 - resources/templates/list、prompts/list、prompts/get 的完整协议路径。
+- resources/read 静态 URI 与 template URI 的协议路径。
+- prompts/get unknown prompt 与缺少 name 的错误路径。
 - 连续多条 NDJSON request 中混合 request、notification 和 error。
 - tools/call transcript 覆盖 invalid params 与 structuredContent。
 
 仍建议覆盖：
 
-- resources/read 静态 URI 与 template URI 的 transcript 路径。
-- prompts/get unknown prompt 与缺少 name 的 transcript 错误路径。
+- 新增 method 或新 tool 时同步补 transcript smoke test。
 
 ### 2. 协议版本策略
 
