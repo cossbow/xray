@@ -16,25 +16,35 @@
     {
       "heading": "Array",
       "fences": [
-        "types-array"
+        "types-array",
+        "expr-array-lit"
       ]
     },
     {
       "heading": "Map",
       "fences": [
-        "types-map"
+        "types-map",
+        "expr-map-lit"
       ]
     },
     {
       "heading": "Set",
       "fences": [
-        "types-set"
+        "types-set",
+        "expr-set-lit"
       ]
     },
     {
       "heading": "Json object",
       "fences": [
-        "types-json-object"
+        "types-json-object",
+        "expr-object-lit"
+      ]
+    },
+    {
+      "heading": "Index access",
+      "fences": [
+        "expr-index-access"
       ]
     },
     {

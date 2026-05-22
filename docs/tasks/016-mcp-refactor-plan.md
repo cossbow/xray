@@ -1,5 +1,8 @@
 # 016 - MCP 模块重构方案
 
+> 状态说明：本文保留为参考实现调研与历史施工路线。当前实现状态、已关闭问题和真实剩余 backlog 以 `015-mcp-improvement.md` 为准。
+> 文中关于 Content-Length、无 prompts、无 resource templates、手写 knowledge 等描述已经过时，阅读时应只把相应章节作为设计背景。
+
 > 基于对 12 个参考实现的源码阅读，结合 015 现状审计，给出 xray MCP 模块的目标架构与实施路线。
 > 015 关注**问题清单**，本文关注**目标设计与施工路径**。
 
@@ -1135,6 +1138,6 @@ npx @modelcontextprotocol/inspector --cli build/xray mcp-server \
 
 ---
 
-**文档版本**：v1（基于 12 个参考实现首版）  
-**前置任务**：015-mcp-improvement.md  
+**文档版本**：v1（基于 12 个参考实现首版）
+**前置任务**：015-mcp-improvement.md
 **下一步**：实施阶段一（NDJSON framing）

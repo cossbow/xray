@@ -14,6 +14,13 @@ aliases: [builtin, print, dump, typeof, builtins]
 - `int(value)` / `float(value)` / `string(value)` / `bool(value)` — explicit conversions
 - `assert(condition)` and `assert_*` helpers — testing assertions
 
+### Printing and debugging
+```xray
+print("hello")                 // auto-appends a newline
+print("a:", a, "b:", b)        // multiple arguments separated by spaces
+dump(some_obj)                 // debug output, with type info and structure
+```
+
 ### Type inspection
 ```xray
 let x = 42

@@ -104,6 +104,17 @@ select {
 }
 ```
 
+### yield — cooperative safepoint
+```xray
+for (i in 0..1000) {
+    do_chunk(i)
+    yield                       // explicit safepoint, lets other coroutines run
+}
+```
+```xray
+yield                       // yield execution
+```
+
 ### defer — LIFO cleanup
 ```xray
 fn read_file(path: string) -> string {

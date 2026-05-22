@@ -1,10 +1,12 @@
 # 083 - MCP Server 最终重构方案
 
+> 状态说明：本文记录最终设计原则和完成判定。当前实现状态与真实 backlog 以 `015-mcp-improvement.md` 为准。
+
 > 原则：Xray 是全新语言，MCP server 不承担历史兼容成本。所有设计选择以协议正确、结构清晰、安全可控、易扩展为准；发现旧实现不合理时直接删除和重写，不保留兼容层。
 
 ## 1. 结论
 
-当前 `src/app/mcp` 已经具备可运行雏形：CLI 接入、JSON-RPC 分发、tools/resources/prompts/knowledge 基本齐全，单测也覆盖了主要静态接口。但它仍是“能用的原型”，不是最终设计。
+当前 `src/app/mcp` 已经具备可运行基础：专用 NDJSON transport、JSON-RPC validation、registry 驱动的 tools/resources/prompts、generated knowledge、runner opt-in 和 MCP knowledge 回归测试均已落地。但它仍有协议 transcript、runner 沙盒测试、schema validator 和搜索排序等后续优化空间。
 
 本方案建议将 MCP server 作为一个独立、严格、可测试的 IDE/AI 集成子系统重写，目标是：
 
@@ -41,34 +43,33 @@ MCP 重构不提供迁移期，不保留旧行为。
 - ~~stdio transport 复用了 Content-Length framing~~ 已完成：NDJSON。
 - ~~`initialize` 没有严格处理重复初始化~~ 已完成：三态 lifecycle。
 - ~~JSON-RPC request validation 不完整~~ 已完成：`xmcp_jsonrpc_validate_message`。
-- `notifications/cancelled` 当前 silently ignored。顺序 dispatch 模型下抢占式取消不可实现，但该 handler 应记录 debug 日志明示 no-op 语义，不该假装处理了。
-- progress token 仍存在 `XmcpServer` 全局字段 `current_progress_token`，该改为 per-call 参数（§5.4）。
+- ~~`notifications/cancelled` silently ignored~~ 已完成：顺序 dispatch 下明确记录 no-op 语义。
+- ~~progress token 存在 `XmcpServer` 全局字段~~ 已完成：改为 per-call `XmcpCallContext`。
+- 当前协议版本固定为 `2025-03-26`，仍需决定版本固定、协商或升级策略。
 
 ### 3.2 工具层
 
 - ~~`xray_check` / `xray_diagnostics` 重复~~ 已完成：合并为 `xray_analyze`。
-- ~~tool result 缺少 `structuredContent` / `outputSchema`~~ 大部已完成（`xray_analyze`/`xray_format`/三个 knowledge tool）；`xray_run` 还未出 structured。
+- ~~tool result 缺少 `structuredContent` / `outputSchema`~~ 已完成主要 tools，包括 `xray_run`。
 - `xray_format` 语法错误路径返回纯 text 错误，该返回 structured diagnostics。
-- `xray_run` 同进程执行但：
-  - dup2 **全局 stdout** 捕获输出 → 会污染 MCP 响应流（bug）。
-  - `xray_isolate_setup_full` 全部 stdlib 启用 → 含 net/io/os/process/cluster，违反“危险模块策略必须显式”。
-  - 无 timeout → 可能永久阻塞顺序 dispatch。
-  - 无 structured output / outputSchema。
-- `xmcp_make_error_result` 被用来包装“调用错误”（缺参/未知 tool），违反 §11 分层：这些应该是 JSON-RPC `invalid params`，不是 tool result。
+- ~~`xray_run` 会污染 MCP stdout、缺少 timeout/outputSchema~~ 已完成：isolate stdout 捕获、timeout、output limit、structured output 已落地。
+- `xray_run` 已有 unit-level 安全边界测试和 transcript 级 stdout 协议隔离测试；仍需更细粒度 allowlist 行为验证。
+- 部分 handler 参数错误仍通过 tool result 表达，后续应统一为 schema validator + JSON-RPC `invalid params`。
 
 ### 3.3 知识库与 prompts
 
-- knowledge 仍以拼接 `char[]` 形式存在 `xmcp_knowledge.c`（近 900 行），是语言规范漂移的头号源头。
-- `xray_stdlib_search` 返回拼接 markdown，不是结构化 matches。
-- topic 枚举在 `tool_xray_syntax_lookup` 错误信息里被硬编码为字符串，不从数据表迭代。
-- prompts 示例未进入 parser smoke test，可能含过时语法。
+- ~~knowledge 以拼接 `char[]` 存在 `xmcp_knowledge.c`~~ 已完成：cards + generated C table。
+- ~~`xray_stdlib_search` 只有拼接 markdown~~ 已完成：保留 text content，同时返回 structured matches。
+- ~~topic 枚举错误信息从硬编码字符串产生~~ 已完成：lookup failure 从 generated knowledge 列出可用 topic。
+- ~~prompts 示例未进入 parser smoke test~~ 已完成：MCP knowledge 回归覆盖 prompt smoke examples。
+- prompt 正文仍是 C 中手写摘要，后续可从 generated knowledge 派生。
 
 ### 3.4 测试层
 
-- ~~缺少真实 stdio 协议端到端测试~~ 部分完成（lifecycle、schema、structured output）。
-- 缺少重复 initialize / parse error / notification 无 response 的 e2e。
-- 缺少 `xray_run` 超时、输出截断、stdlib 白名单测试（功能未实现）。
-- 缺少 knowledge/prompt 语法示例可解析的回归测试。
+- ~~缺少真实 stdio 协议端到端测试~~ 部分完成（transport、lifecycle、parse error、unknown method、notification、runner stdout isolation）。
+- 仍需 resources/templates/list、prompts/list、prompts/get 和更多 tools/call transcript 覆盖。
+- ~~缺少 `xray_run` 超时、输出截断、stdlib 白名单测试~~ 已完成 unit coverage。
+- ~~缺少 knowledge/prompt 语法示例可解析的回归测试~~ 已完成：topic fences 和 prompt smoke examples 已进入 MCP knowledge 回归。
 
 ## 4. 目标架构
 
@@ -436,37 +437,22 @@ source
 
 ## 10. Knowledge 结构化与生成化
 
-分两步进，避免一步到位成本过高：
+当前实现已经完成生成化：
 
-### 第一步：手写但结构化
+- 语言语义和权威示例来自 `docs/spec/source/sections/*.md`。
+- MCP topic/resource/stdlib 投影来自 `docs/spec/source/cards/**/*.json`。
+- `scripts/gen_language_docs.py` 生成 `LANGUAGE_SPEC_CN.md`、`LANGUAGE_SPEC.md` 和 `docs/knowledge/**`。
+- `scripts/gen_mcp_knowledge.py` 结合 `docs/knowledge/**` 与 analyzer builtin dump 生成 `src/app/mcp/xmcp_knowledge_generated.c`。
+- stdlib symbol 签名来自 analyzer builtin metadata，不在 cards 中手写复制。
+- `xmcp_knowledge.c` 只保留加载、lookup 和 search/ranking 逻辑。
 
-- 把 `TOPIC_*[]` / `STDLIB_LIST[]` 等拼接 `char[]` 重写为结构体数组：
-  ```c
-  typedef struct XmcpTopicEntry {
-      const char *id;
-      const char *title;
-      const char *summary;
-      const char *body;       /* markdown body */
-      const char *aliases[8]; /* NULL-terminated */
-  } XmcpTopicEntry;
+维护要求：
 
-  typedef struct XmcpStdlibEntry {
-      const char *module;
-      const char *summary;
-      const char *body;
-  } XmcpStdlibEntry;
-  ```
-- search 从拼接 markdown 改为返回 ranked `XmcpStdlibMatch[]`。
-- topic 枚举、"available topics" 错误提示从 `XmcpTopicEntry[]` 迭代生成。
-- search/ranking 逻辑住在 `xmcp_knowledge.c`，不与数据表混在一起。
-
-### 第二步：生成化（后续）
-
-- 新增构建脚本从语言规范 metadata + analyzer builtin metadata 生成 `xmcp_knowledge_generated.c`。
-- 生成脚本需要带测试，确保关键语法主题存在、stdlib symbol 签名与 analyzer builtin 表一致。
-- 手写部分限于 search/ranking 逻辑。
-
-第一步不需要生成脚本也能消除拼接字符串漂移问题的一半；第二步可以在语言规范稳定后再启动。
+- 新增 Xray 语法或语义时，先更新 `sections/*.md` 中英文正文，再更新相关 card。
+- 需要 MCP 复用的示例使用 `xray @id=...` fence，并由 card `fences` 引用。
+- 新增 `@id` fence 后必须有至少一个 card 引用。
+- 新增 topic card 后必须同步 tool/resource metadata 列表。
+- MCP knowledge 回归必须保持生成物最新、示例可检查、stdlib symbols 与 analyzer builtin dump 一致。
 
 ## 11. 错误处理策略
 
@@ -622,13 +608,13 @@ MCP 重构完成必须同时满足：
 - tools/list 只由 registry 产生，capabilities 只由 registry 推导。
 - `xray_analyze` 能返回 parser + analyzer structured diagnostics。
 - `xray_run` 受 timeout 保护不会无限阻塞 server；stdlib 限于白名单；stdout 不污染 MCP 响应。
-- knowledge 以结构体数组存储，`xray_stdlib_search` 返回 ranked matches。
+- knowledge 使用 cards + generated C table，`xray_stdlib_search` 返回 ranked structured matches。
 - prompt 示例全部符合当前 Xray 语法。
 - 完整 `ctest --output-on-failure` 通过。
 
 进阶目标（后续）：
 
-- knowledge 走到生成化第二步。
+- protocol transcript conformance 测试覆盖真实 stdio 会话。
 - runner stdlib 重启用有显式 CLI flag 控制。
 - worker 模型补齐 cancel 与并发。
 

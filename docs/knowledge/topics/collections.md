@@ -12,6 +12,11 @@ let a: Array<int> = [1, 2, 3]
 let b = [1, 2, 3]                // inferred as Array<int>
 let c: Array<string> = []         // explicit empty array
 ```
+```xray
+let a = [1, 2, 3]
+let empty: Array<int> = []
+let mixed = [1, "hello"]    // type Array<int | string>
+```
 
 ### Map
 ```xray
@@ -22,10 +27,18 @@ let empty = #{}                                     // empty Map
 m["c"] = 3                                          // insert / update
 let v = m["a"]                                      // lookup; returns null if absent
 ```
+```xray
+let m = #{"a": 1, "b": 2}
+let empty = #{}                           // empty Map
+```
 
 ### Set
 ```xray
 let s: Set<int> = #[1, 2, 3]
+```
+```xray
+let s = #[1, 2, 3]
+let empty = #[]
 ```
 
 ### Json object
@@ -43,6 +56,19 @@ let user = { name, age }                  // equivalent to { name: name, age: ag
 
 // Map literal: `#{}` prefix + `:`
 let m = #{"k1": 1, "k2": 2}           // type: Map<string, int>
+```
+```xray
+let p = { name: "Alice", age: 30 }
+let users = "Bob"
+let obj = { users }              // shorthand
+```
+
+### Index access
+```xray
+arr[0]
+arr[0] = 10
+map["key"]
+str[i]                  // returns a single-character string
 ```
 
 ### Other collection-like types

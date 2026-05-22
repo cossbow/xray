@@ -47,6 +47,13 @@
       ]
     },
     {
+      "heading": "yield — cooperative safepoint",
+      "fences": [
+        "coro-yield-loop",
+        "expr-yield"
+      ]
+    },
+    {
       "heading": "defer — LIFO cleanup",
       "fences": [
         "stmt-defer"

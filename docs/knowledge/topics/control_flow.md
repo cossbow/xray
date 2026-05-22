@@ -68,6 +68,17 @@ match (action) {
     _ -> log.warn("unknown")
 }
 ```
+```xray
+let result = match (x) {
+    1 -> "one",
+    2, 3, 4 -> "few",                 // multi-value
+    10..20 -> "teen",                 // range
+    n if (n > 100) -> "big",          // guard
+    Color.Red -> "red",               // enum
+    is User -> "a user",              // type pattern
+    _ -> "default"                    // wildcard
+}
+```
 
 ### try / catch / finally / throw
 ```xray
@@ -100,5 +111,24 @@ fn process() {
         cleanup()
     }
     do_work()
+}
+```
+
+### break / continue / return
+```xray
+break                  // exit the innermost loop
+continue               // proceed to the next iteration
+```
+```xray
+fn done() {
+    return                 // implicitly returns () (Unit)
+}
+
+fn answer() -> int {
+    return 42
+}
+
+fn pair(a: int, b: int) -> (int, int) {
+    return (a, b)          // multi-value return must wrap a tuple in parens
 }
 ```

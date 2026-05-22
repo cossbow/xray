@@ -1,572 +1,175 @@
-# Xray MCP 模块优化建议
-
-> 基于对官方 TypeScript SDK、Go SDK、mcp-language-server、everything reference server 的深入源码阅读，
-> 对照 Xray 现有 MCP 模块（`src/app/mcp/`）产出的改进方案。
-
----
-
-## 一、现状分析
-
-### 1.1 Xray MCP 模块当前架构
-
-```
-xmcp_server.c      — stdio 传输 + JSON-RPC 2.0 分发主循环
-xmcp_protocol.c/h  — initialize 响应构建
-xmcp_tools.c/h     — tools/list + tools/call (3 个工具)
-xmcp_resources.c/h — resources/list + resources/read (3 个静态资源)
-xmcp_knowledge.c/h — 内嵌知识库 (语法主题 + stdlib 索引)
-```
+# Xray MCP 模块当前审计与后续优化
 
-### 1.2 已实现的功能
+本文记录 `src/app/mcp/` 的当前状态和真实后续 backlog。旧版审计中的若干问题已经完成，后续开发以本文的状态表为准。
 
-| 功能 | 状态 |
-|------|------|
-| stdio 传输 | ✅ 基本可用 |
-| JSON-RPC 2.0 请求/响应 | ✅ |
-| initialize / initialized 握手 | ✅ |
-| ping | ✅ |
-| tools/list, tools/call | ✅ 3 个工具 |
-| resources/list, resources/read | ✅ 3 个静态资源 |
-| xray_check (语法检查) | ✅ |
-| xray_syntax_lookup (语法查询) | ✅ |
-| xray_stdlib_search (stdlib 搜索) | ✅ |
+## 当前实现概览
 
-### 1.3 与参考实现的差距总结
+### 协议与传输
 
-| 维度 | Xray 现状 | 参考实现标准 |
-|------|-----------|-------------|
-| 协议版本 | `2025-03-26` | 最新 `2025-06-18` 已增加 tasks、elicitation 等 |
-| 能力声明 | 仅 tools + resources(且 resources.listChanged=false） | 应根据实际注册动态推导，含 prompts、logging、completions |
-| 错误处理 | 基本的 JSON-RPC error | 缺少标准错误码枚举、method not found 等 |
-| 进度通知 | 无 | 长运行工具应发 `notifications/progress` |
-| Prompts | 无 | 重要特性：预定义提示模板 |
-| Resource Templates | 无 | URI 模板 + 动态资源生成 |
-| 日志通知 | 无 | `notifications/message` 日志级别 |
-| 工具 annotations | 无 | priority、audience、readOnlyHint 等元数据 |
-| 分页 | 无 | 大列表需 cursor-based 分页 |
-| 动态注册 | 无 | listChanged 通知 |
-| 输入/输出 schema 验证 | 无 | Go SDK 和 TS SDK 都做严格验证 |
-| 结构化输出 | 无 | structuredContent + outputSchema |
-| 优雅关闭 | 部分 | 缺少 parent process 监控 |
+- 专用 NDJSON stdio transport，MCP 不再复用 LSP/DAP 的 `Content-Length` framing。
+- JSON-RPC 请求验证、错误响应 helper 和 method dispatch 已拆分为独立路径。
+- 生命周期使用明确状态：created、initialize 已响应、ready。
+- `notifications/cancelled` 在当前顺序 dispatch 模型下不可抢占，handler 明确记录 no-op 语义。
+- `progressToken` 已经是 per-call `XmcpCallContext`，不再放在 server 全局状态中。
+- 当前协议版本仍是 `2025-03-26`。
 
----
+### Registry 与 capabilities
 
-## 二、优化建议（按优先级分阶段）
+- Tools、resources、resource templates、prompts 由 `XmcpRegistry` 统一持有。
+- `initialize` capabilities 从 registry 动态推导。
+- logging capability 始终声明。
+- runner toolset 通过 `--enable-runner` 显式启用，默认关闭。
 
-### Phase 1：协议合规与健壮性（高优先级）
+### 已有 tools
 
-#### P1.1 完善 JSON-RPC 错误处理
+| Tool | 默认启用 | 说明 |
+|---|---:|---|
+| `xray_analyze` | 是 | Parser + analyzer 诊断，返回 text summary 和 structured diagnostics |
+| `xray_format` | 是 | 格式化 Xray 源码，返回 formatted code 和结构化字段 |
+| `xray_syntax_lookup` | 是 | 查询 generated syntax topic |
+| `xray_stdlib_search` | 是 | 查询 generated stdlib module / symbol index |
+| `xray_definition` | 是 | 综合查询 syntax topic 与 stdlib symbol |
+| `xray_run` | 否 | 一次性 isolate 运行短代码，带 timeout、output limit 和 structured output |
 
-**问题**：当前 `xmcp_server.c` 遇到未知方法时直接 `MCP_LOG_DEBUG` 忽略，不返回错误响应。
+### 已有 resources 与 prompts
 
-**建议**：
+- 静态 resources：cheatsheet、concurrency model、stdlib module list。
+- Resource templates：`xray://spec/topic/{name}`、`xray://stdlib/{module}`。
+- Prompts：`code-review`、`explain-error`、`convert-to-xray`、`concurrency-pattern`、`write-test`。
 
-- 定义标准错误码枚举（参考 TypeScript SDK `schemas.ts`）：
-  ```c
-  #define XMCP_ERR_PARSE       (-32700)
-  #define XMCP_ERR_INVALID_REQ (-32600)
-  #define XMCP_ERR_NOT_FOUND   (-32601)
-  #define XMCP_ERR_INVALID_PARAMS (-32602)
-  #define XMCP_ERR_INTERNAL    (-32603)
-  ```
-- 对每个带 `id` 的请求，**必须**返回 response（成功或错误）
-- 对 notification（无 `id`）的未知方法，可安全忽略但应 debug log
+### Knowledge 生成链
 
-**参考**：Go SDK `server.go:748` 对 unknown tool 返回 `jsonrpc.CodeInvalidParams` 错误。
+- 语言语义和权威示例来自 `docs/spec/source/sections/*.md`。
+- MCP 投影来自 `docs/spec/source/cards/**/*.json`。
+- `docs/knowledge/**`、`LANGUAGE_SPEC_CN.md`、`LANGUAGE_SPEC.md` 由 `scripts/gen_language_docs.py` 生成。
+- `src/app/mcp/xmcp_knowledge_generated.c` 由 generated knowledge 和 analyzer builtin dump 生成。
+- stdlib API 签名来自 analyzer builtin metadata，不在 card 中手写复制。
 
-#### P1.2 修正 Capabilities 声明
+## 已关闭的旧问题
 
-**问题**：当前 capabilities 是硬编码的，`resources.listChanged` 设为 false，且缺少 logging 能力。
+| 旧问题 | 当前状态 |
+|---|---|
+| MCP stdio 使用 `Content-Length` | 已切换为 NDJSON transport |
+| 缺少 JSON-RPC validation | 已有 validator 和错误 helper |
+| capabilities 纯硬编码 | 已从 registry 动态推导 |
+| 无 prompts | 已有 5 个 prompt |
+| 无 resource templates | 已有 topic 和 stdlib template |
+| 无 tool annotations / output schema | tools/list 已输出 annotations；主要 tools 已有 outputSchema |
+| progress token 是全局状态 | 已改为 per-call context |
+| knowledge 为手写大块 C 字符串 | 已改为 cards + generated C table |
+| prompt 示例缺少语法 smoke test | 已进入 MCP knowledge 回归 |
+| sections/cards 示例可能漂移 | 已增加 card fence 引用和 orphan fence coverage 门禁 |
 
-**建议**：
+## 真实剩余 backlog
 
-- 采用 Go SDK 的**自动推导模式**：注册了 tools 则自动声明 `tools: {listChanged: true}`，注册了 resources 同理
-- 添加 `logging: {}` 能力声明
-- 如果后续增加 prompts，自动声明 `prompts: {listChanged: true}`
-- 将 capabilities 构建逻辑从 `xmcp_protocol.c` 移至可动态查询注册状态的函数
+### 1. 协议一致性测试
 
-```c
-/* Pseudocode for dynamic capability inference */
-static XrJsonValue *build_capabilities(XmcpServer *server) {
-    XrJsonValue *caps = xlsp_json_new_object();
-    if (server->tool_count > 0) {
-        XrJsonValue *tc = xlsp_json_new_object();
-        XLSP_JSON_SET_BOOL(tc, "listChanged", true);
-        xlsp_json_object_set(caps, "tools", tc);
-    }
-    // ... similarly for resources, prompts
-    xlsp_json_object_set(caps, "logging", xlsp_json_new_object());
-    return caps;
-}
-```
+当前测试覆盖了 transport、protocol handler、knowledge generation 和核心 stdio transcript 路径。
 
-#### P1.3 工具输入 Schema 验证
+已覆盖：
 
-**问题**：当前 `tools/call` 不验证参数是否符合声明的 inputSchema。错误的参数可能导致段错误或不可预测行为。
+- initialize -> initialized -> tools/list。
+- ready 前调用普通 request 被拒绝。
+- 重复 initialize 的行为。
+- unknown method 返回 method not found。
+- malformed JSON 返回 parse error。
+- notification 不返回 response。
+- 拒绝或忽略 `Content-Length` 输入。
+- runner stdout 不污染 MCP stdout 协议流。
 
-**建议**：
+仍建议覆盖：
 
-- 在 `xmcp_handle_tools_call` 中，调用工具前**至少**验证必需字段存在且类型正确
-- 短期方案：手动校验（当前工具只有简单的 string 参数）
-- 长期方案：构建轻量 JSON Schema 验证器（或仅验证 required + type）
+- resources/templates/list、prompts/list、prompts/get 的完整协议路径。
+- 连续多条 NDJSON request 中混合 request、notification 和 error。
+- 更完整的 tools/call transcript，包括 invalid params 与 structuredContent。
 
-**参考**：Go SDK `toolForErr()` 函数使用 `jsonschema.Resolved` 对入参做严格 validate + 默认值填充。
+### 2. 协议版本策略
 
-#### P1.4 优雅关闭
+当前版本固定为 `2025-03-26`。需要决定是否继续固定版本，还是实现版本协商。
 
-**问题**：当前主循环在 stdin EOF 时退出，但没有处理 SIGTERM/SIGINT，也没有监控父进程。
+可选策略：
 
-**建议**：
+- 保守策略：继续固定 `2025-03-26`，只实现该版本明确能力。
+- 协商策略：读取 initialize 的 client protocolVersion，在服务器支持范围内选择版本。
+- 升级策略：评估 `2025-06-18` 或更新版本的 breaking changes 后一次性升级。
 
-- 添加信号处理（SIGTERM, SIGINT → 设置 `server->shutdown = true`）
-- 参考 `mcp-language-server` 的父进程监控：轮询 `getppid()` 检测父进程退出
-- 关闭时清理 isolate 和 knowledge 资源
+### 3. 参数验证与错误分层
 
-```c
-/* In server main loop */
-signal(SIGTERM, handle_signal);
-signal(SIGINT, handle_signal);
-```
+部分 handler 仍然包含手动参数检查。后续应统一为轻量 schema validator。
 
----
+建议支持：
 
-### Phase 2：功能扩展（中优先级）
+- required 字段。
+- primitive type。
+- enum。
+- integer range。
+- object / array 的浅层结构。
 
-#### P2.1 添加 Prompts 支持
+错误分层规则：
 
-**为什么重要**：Prompts 让 AI 助手获取预定义的提示模板，极大提升交互效率。对于 Xray 语言，这是让 AI 快速了解语言特性的最高效方式。
+- 参数缺失、类型错误、未知 tool/resource 属于 JSON-RPC invalid params。
+- Xray 源码自身的语法、语义、运行时失败属于 tool result `isError=true`。
 
-**建议添加的 Prompts**：
+### 4. Runner 沙盒加固
 
-| Prompt 名称 | 描述 | 参数 |
-|-------------|------|------|
-| `code-review` | 审查 Xray 代码的最佳实践 | `code: string` |
-| `explain-error` | 解释 Xray 编译/运行时错误 | `error: string` |
-| `convert-to-xray` | 将其他语言代码转换为 Xray | `code: string`, `sourceLanguage: string` |
-| `concurrency-pattern` | 推荐并发模式 | `description: string` |
-| `write-test` | 为 Xray 代码生成测试 | `code: string` |
+`xray_run` 已有默认关闭、一次性 isolate、timeout、output limit 和 structured output；unit coverage 已覆盖 runner 默认关闭、outputSchema、基础输出、截断、timeout 后 server 继续可用，以及危险模块 import 拒绝。
 
-**实现方式**：
+仍建议补齐：
 
-新建 `xmcp_prompts.c/h`，参考 everything server 的 prompts 目录结构：
+- 更细粒度的 module allowlist 测试：允许模块可用、禁止模块不可用，错误信息稳定。
+- 评估内存配额或子进程 runner。
 
-```c
-typedef struct {
-    const char *name;
-    const char *title;
-    const char *description;
-    /* args schema */
-    int arg_count;
-    struct { const char *name; const char *description; bool required; } args[4];
-    /* handler returns GetPromptResult as JSON */
-    XrJsonValue *(*handler)(XmcpServer *server, XrJsonValue *args);
-} XmcpPromptDef;
-```
+### 5. Knowledge 搜索排序
 
-Handler 返回 `messages` 数组，每个 message 含 `role` + `content`，将 Xray 语言规范嵌入 system prompt 中。
+当前 generated knowledge 已消除源漂移，搜索排序已支持 alias exact match、`module.symbol` 直达和多词 query 的 module-context 加权。
 
-#### P2.2 添加 Resource Templates
+已覆盖：
 
-**问题**：当前只有 3 个硬编码的静态资源。
+- alias exact match 优先。
+- stdlib `module.symbol` 直达。
+- 多词 query 做 token 交集评分。
 
-**建议**：增加 URI 模板资源，支持动态查询：
+仍建议优化：
 
-| URI Template | 功能 |
-|-------------|------|
-| `xray://spec/topic/{topicName}` | 按主题查询语法规范 |
-| `xray://stdlib/{moduleName}` | 查询特定 stdlib 模块详情 |
-| `xray://project/{filePath}` | 读取项目文件（如有工作区） |
+- title、alias、lead、body 分权重。
+- 对无命中的 query 返回相近 topic/module 建议。
 
-**实现**：
+### 6. Resource completion 与更多 templates
 
-```c
-typedef struct {
-    const char *uri_template;
-    const char *name;
-    const char *description;
-    const char *mime_type;
-    XrJsonValue *(*read_handler)(XmcpServer *server, const char *uri,
-                                  /* parsed variables */ ...);
-} XmcpResourceTemplateDef;
-```
+当前已有两个 resource template，但还没有 completion。
 
-需要实现简单的 URI template 匹配（RFC 6570 Level 1，仅 `{variable}` 替换）。
+建议增加：
 
-#### P2.3 进度通知（notifications/progress）
+- `completion/complete` for topic name。
+- `completion/complete` for stdlib module。
+- `xray://stdlib/{module}/{symbol}`。
+- `xray://spec/anchor/{anchor}`。
 
-**问题**：`xray_check` 对大文件可能耗时较长，AI 客户端无法获知进度。
+### 7. Prompt 内容生成化
 
-**建议**：
+Prompt 已进入 smoke test，但内容仍是 C 中手写摘要。
 
-- 在工具回调中增加 `progressToken` 检查（来自 `_meta.progressToken`）
-- 对 `xray_check` 等可能耗时的工具，发送进度通知
+建议：
 
-```c
-/* Check if client requested progress tracking */
-XrJsonValue *meta = xlsp_json_get(params, "_meta");
-int64_t progress_token = -1;
-if (meta) {
-    progress_token = xlsp_json_get_int(meta, "progressToken", -1);
-}
+- prompt 中的固定语言规则尽量从 generated knowledge 摘要派生。
+- prompt 示例继续由测试覆盖。
+- 不在 prompt 中复制与 sections/cards 冲突的独立语义。
 
-/* During long operation, send progress */
-if (progress_token >= 0) {
-    xmcp_send_progress(server, progress_token, current, total);
-}
-```
+### 8. 文档和任务文件收敛
 
-**参考**：everything server 的 `trigger-long-running-operation.ts`。
+`015`、`016`、`083` 都记录过 MCP 设计。后续应保持单一当前状态入口，避免旧任务文档继续误导实现判断。
 
-#### P2.4 日志通知（notifications/message）
+建议：
 
-**建议**：
-
-- 将当前的 `MCP_LOG_*` 宏改为同时发送 MCP logging notification
-- 日志级别映射：`debug/info/warning/error/critical`
-- 仅在 initialized 后发送
-
-```c
-void xmcp_send_log(XmcpServer *server, const char *level, const char *message) {
-    if (!server->initialized) return;
-    XrJsonValue *params = xlsp_json_new_object();
-    XLSP_JSON_SET_STRING(params, "level", level);
-    xlsp_json_object_set(params, "data", xlsp_json_new_string(message));
-    xmcp_send_notification(server, "notifications/message", params);
-}
-```
-
-#### P2.5 工具 Annotations
-
-**建议**：为每个工具添加 MCP annotations 元数据，帮助 AI 客户端理解工具的行为特征：
-
-```c
-/* xray_check: read-only analysis, no side effects */
-"annotations": {
-    "title": "Xray Code Checker",
-    "readOnlyHint": true,
-    "destructiveHint": false,
-    "openWorldHint": false
-}
-
-/* Future: xray_format could be non-read-only */
-"annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": false
-}
-```
+- `015` 作为当前状态和 backlog。
+- `083` 作为最终设计原则和完成判定。
+- `016` 作为历史参考，必要时只保留仍有价值的参考实现摘录。
 
-**参考**：everything server 的 `get-annotated-message.ts` 展示了 content annotations（priority、audience）。
-
----
-
-### Phase 3：新工具（中优先级）
-
-基于 mcp-language-server 的工具设计和 Xray 的 LSP 能力，建议添加以下工具：
-
-#### P3.1 `xray_format` — 代码格式化
-
-```json
-{
-    "name": "xray_format",
-    "description": "Format Xray source code according to standard style",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "code": {"type": "string", "description": "Xray source code to format"}
-        },
-        "required": ["code"]
-    }
-}
-```
-
-**实现**：复用 `src/frontend/format/xfmt.c` 的格式化器。
-
-#### P3.2 `xray_run` — 执行代码片段
-
-```json
-{
-    "name": "xray_run",
-    "description": "Execute a small Xray code snippet and return output",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "code": {"type": "string", "description": "Xray code to execute"},
-            "timeout": {"type": "number", "description": "Timeout in milliseconds", "default": 5000}
-        },
-        "required": ["code"]
-    },
-    "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": true
-    }
-}
-```
-
-**注意**：需要沙盒化执行，限制时间和内存。可以设置 isolate 的资源限制。
-
-#### P3.3 `xray_diagnostics` — 获取文件诊断信息
-
-类似 mcp-language-server 的 `diagnostics` 工具，但直接调用 Xray 的分析器：
-
-```json
-{
-    "name": "xray_diagnostics",
-    "description": "Get detailed diagnostic information (errors, warnings, hints) for Xray source code",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "code": {"type": "string", "description": "Xray source code"},
-            "filePath": {"type": "string", "description": "Optional file path for context"}
-        },
-        "required": ["code"]
-    }
-}
-```
-
-#### P3.4 `xray_definition` — 符号定义查找
-
-参考 mcp-language-server 的 `definition` 工具：
-
-```json
-{
-    "name": "xray_definition",
-    "description": "Find the definition of a symbol in the Xray standard library or project",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "symbolName": {"type": "string"},
-            "filePath": {"type": "string", "description": "File context for resolving symbols"}
-        },
-        "required": ["symbolName"]
-    }
-}
-```
-
----
-
-### Phase 4：架构改进（低优先级但重要）
-
-#### P4.1 请求分发表驱动
-
-**问题**：当前 `xmcp_server.c` 用 `strcmp` 链做方法分发，每添加一个方法需要修改主循环。
+## 维护规则
 
-**建议**：改为表驱动分发（参考 Go SDK 的 methodHandler 模式）：
-
-```c
-typedef struct {
-    const char *method;
-    bool        is_notification;  /* true = no response expected */
-    XrJsonValue *(*handler)(XmcpServer *server, XrJsonValue *params);
-} XmcpMethodEntry;
-
-static const XmcpMethodEntry METHOD_TABLE[] = {
-    {"initialize",                  false, xmcp_handle_initialize_wrapper},
-    {"notifications/initialized",   true,  xmcp_handle_initialized},
-    {"ping",                        false, xmcp_handle_ping},
-    {"tools/list",                  false, xmcp_handle_tools_list_wrapper},
-    {"tools/call",                  false, xmcp_handle_tools_call_wrapper},
-    {"resources/list",              false, xmcp_handle_resources_list_wrapper},
-    {"resources/read",              false, xmcp_handle_resources_read_wrapper},
-    {"prompts/list",                false, xmcp_handle_prompts_list_wrapper},
-    {"prompts/get",                 false, xmcp_handle_prompts_get_wrapper},
-    /* ... */
-    {NULL, false, NULL}
-};
-```
-
-主循环只需遍历表查找匹配项，代码更清晰、更易扩展。
-
-#### P4.2 工具注册表驱动
-
-**问题**：当前工具定义和 handler 混在一起，添加工具需要修改多处。
-
-**建议**：参考 Go SDK 的 `featureSet` 和 TypeScript SDK 的 `RegisteredTool` 模式，将工具注册为运行时数据结构：
-
-```c
-typedef struct {
-    const char    *name;
-    const char    *title;
-    const char    *description;
-    XrJsonValue   *input_schema;   /* JSON Schema object */
-    XrJsonValue   *output_schema;  /* optional */
-    XrJsonValue   *annotations;    /* optional */
-    bool           enabled;
-    XrJsonValue *(*handler)(XmcpServer *server, XrJsonValue *args);
-} XmcpRegisteredTool;
-
-typedef struct XmcpServer {
-    /* ... existing fields ... */
-    XmcpRegisteredTool tools[32];
-    int tool_count;
-    /* Similar for resources, prompts */
-} XmcpServer;
-```
-
-这样 `tools/list` 和 `tools/call` 的实现就是纯数据驱动的，添加新工具只需要在初始化时 `xmcp_register_tool()`。
-
-#### P4.3 通知发送基础设施
-
-**建议**：抽象出通用的通知发送函数：
-
-```c
-/* Send a JSON-RPC notification (no id, no response expected) */
-XR_FUNC void xmcp_send_notification(XmcpServer *server,
-                                      const char *method,
-                                      XrJsonValue *params);
-
-/* Convenience wrappers */
-XR_FUNC void xmcp_send_progress(XmcpServer *server,
-                                  int64_t token, int progress, int total);
-XR_FUNC void xmcp_send_log(XmcpServer *server,
-                             const char *level, const char *message);
-XR_FUNC void xmcp_send_tool_list_changed(XmcpServer *server);
-XR_FUNC void xmcp_send_resource_list_changed(XmcpServer *server);
-```
-
-#### P4.4 分页支持
-
-**问题**：如果后续工具/资源数量增长，需要支持 cursor-based 分页。
-
-**建议**：参考 Go SDK 的 `paginateList` 实现，使用 opaque cursor（实际上是排序后的最后一个 key 的编码）：
-
-- `tools/list` 接受 `cursor` 参数
-- 返回 `nextCursor` 字段
-- 默认 page size 可配置（Go SDK 默认 1000）
-
-当前工具只有 3 个，暂不紧急，但架构应预留扩展点。
-
-#### P4.5 独立 JSON 模块
-
-**问题**：当前依赖 `../lsp/xlsp_json.h`，MCP 和 LSP 共用 JSON 工具函数。
-
-**建议**：
-
-- 短期：维持现状，共用是合理的
-- 长期：如果 MCP 和 LSP 的 JSON 需求分化（例如 MCP 需要 JSON Schema 验证），考虑将通用 JSON 操作下沉到 `src/base/` 或 `src/frontend/`
-
----
-
-### Phase 5：测试与质量（持续）
-
-#### P5.1 MCP 协议一致性测试
-
-**建议**：参考 Go SDK 的 `conformance_test.go`（txtar 格式的测试用例），创建协议一致性测试：
-
-- 验证 initialize 握手完整流程
-- 验证 unknown method 返回正确错误码
-- 验证 tools/list 返回格式合规
-- 验证 tools/call 参数校验
-- 验证 notification 不返回 response
-
-可以用 shell 脚本 + 管道模拟 stdio MCP 会话：
-
-```bash
-# tests/mcp/test_initialize.sh
-echo 'Content-Length: N\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize",...}' | xray mcp-server | verify_response
-```
-
-#### P5.2 参考 everything server 的测试模式
-
-everything server 有独立的测试文件：
-- `__tests__/tools.test.ts`
-- `__tests__/resources.test.ts`
-- `__tests__/prompts.test.ts`
-
-建议为 Xray MCP 创建类似的单元测试：`tests/unit/mcp/test_mcp_tools.c` 等。
-
----
-
-## 三、实施路线图
-
-### 第一阶段（1-2 周）— 协议合规
-
-1. P1.1 错误码枚举 + unknown method 返回 error response
-2. P1.2 capabilities 动态推导
-3. P1.3 工具入参基本验证
-4. P1.4 信号处理 + 优雅关闭
-5. P5.1 基础协议一致性测试
-
-### 第二阶段（2-3 周）— 功能扩展
-
-1. P4.1 方法分发表驱动重构
-2. P4.2 工具注册表驱动重构
-3. P4.3 通知发送基础设施
-4. P2.1 Prompts 支持（3-5 个实用 prompt）
-5. P2.5 工具 annotations
-6. P2.4 日志通知
-
-### 第三阶段（2-3 周）— 新工具 + 资源
-
-1. P3.1 xray_format 工具
-2. P3.3 xray_diagnostics 工具
-3. P2.2 Resource Templates
-4. P2.3 进度通知
-5. P3.2 xray_run 工具（需沙盒设计）
-
-### 第四阶段（持续改进）
-
-1. P3.4 xray_definition 工具（需 LSP 集成）
-2. P4.4 分页支持
-3. 协议版本升级到 2025-06-18（tasks、elicitation）
-4. 更多 prompts 和 resource templates
-
----
-
-## 四、参考源码清单
-
-| 仓库 | 关键文件 | 学习重点 |
-|------|---------|---------|
-| typescript-sdk | `packages/core/src/types/schemas.ts` | 完整 MCP 协议 schema 定义 |
-| typescript-sdk | `packages/server/src/server/mcp.ts` | 高层 server API、工具/资源/prompt 注册管理、task augmentation |
-| go-sdk | `mcp/server.go` | featureSet 注册模式、capabilities 自动推导、分页、change 通知 debounce |
-| go-sdk | `mcp/features.go` | 泛型 featureSet 实现，可作为 C 版本数据结构参考 |
-| mcp-language-server | `main.go`, `tools.go` | LSP→MCP 桥接模式、工具注册、父进程监控、优雅关闭 |
-| servers/everything | `server/index.ts` | server factory 模式、capabilities 全量声明、post-init 条件注册 |
-| servers/everything | `tools/*.ts` | 丰富的工具模式：annotations、long-running、structured content |
-| servers/everything | `prompts/*.ts` | prompt 注册、completions、embedded resource prompt |
-| servers/everything | `resources/templates.ts` | URI template 资源、completer 自动补全 |
-
----
-
-## 五、关键设计决策建议
-
-### 5.1 C 语言下的注册表模式
-
-由于 C 没有泛型和闭包，建议用**函数指针表 + void\* 上下文**模式：
-
-```c
-typedef XrJsonValue *(*XmcpToolHandler)(XmcpServer *server, XrJsonValue *args);
-
-typedef struct {
-    const char       *name;
-    const char       *description;
-    XrJsonValue      *input_schema;
-    XmcpToolHandler   handler;
-    bool              enabled;
-} XmcpTool;
-```
-
-注册时用静态数组或链表存储，分发时线性查找（工具数量 <50 时性能足够）。
-
-### 5.2 通知 debounce
-
-Go SDK 在 `changeAndNotify` 中使用 10ms 的 timer debounce 批量变更通知。由于 Xray MCP 是单线程 stdio，这不是必须的，但如果后续添加动态工具注册（如按文件类型启用工具），则应考虑。
-
-### 5.3 协议版本协商
-
-当前硬编码 `2025-03-26`。未来应支持：
-- 从客户端 initialize 请求中读取 `protocolVersion`
-- 服务器回复**自己支持的最高兼容版本**
-- 根据协商版本启用/禁用功能（如 tasks 仅在 2025-06-18+ 可用）
-
-### 5.4 与 LSP 的关系
-
-mcp-language-server 展示了 LSP→MCP 桥接模式。Xray 已有强大的 LSP（`src/app/lsp/`），长期可以：
-- MCP 工具复用 LSP 的分析能力（如 diagnostics、definition、references）
-- 但 MCP server 和 LSP server 应保持独立进程，避免耦合
-- 共享知识库和格式化器是合理的
-
----
-
-*文档生成日期：基于 MCP 协议 2025-03-26/2025-06-18 规范*
-*参考源码版本：typescript-sdk latest, go-sdk latest, mcp-language-server v0.0.2, servers/everything v2.0.0*
+- 修改 Xray 语法或语义时，先更新 `sections/*.md` 的中文和英文正文，再更新相关 card。
+- 需要 MCP 复用的 Xray 示例必须放在 `sections/*.md` 的 `xray @id=...` fence 中，再由 card `fences` 引用。
+- 新增 `@id` fence 后必须有至少一个 card 引用。
+- 新增 topic card 后必须同步 tool/resource metadata 列表。
+- 新增 stdlib builtin 后必须确保 analyzer builtin dump 和 generated MCP table 同步。
+- 每次修改后运行 MCP knowledge 回归和完整 `ctest`。

@@ -39,7 +39,8 @@
     {
       "heading": "match",
       "fences": [
-        "stmt-match"
+        "stmt-match",
+        "expr-match"
       ]
     },
     {
@@ -52,6 +53,13 @@
       "heading": "defer",
       "fences": [
         "stmt-defer"
+      ]
+    },
+    {
+      "heading": "break / continue / return",
+      "fences": [
+        "stmt-break-continue",
+        "stmt-return"
       ]
     }
   ]

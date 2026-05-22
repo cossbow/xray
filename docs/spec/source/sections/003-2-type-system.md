@@ -76,16 +76,24 @@ Xray 是静态类型语言；每个表达式在编译期有确定类型。类型
 | 其他一切（包括 `0.0001`、非空字符串/集合、对象引用） | **truthy** |
 
 ```xray @id=types-truthy-falsy
-let x: int? = maybe_int()
+let x: int? = 41
 if (x) {                  // truthy 上下文：x 既不是 null 也不是 0 时进入
     print(x + 1)          // 此分支中 x 被窄化为 int
 }
 
 let s: string = ""
-if (s) { ... } else { ... }    // falsy：进入 else
+if (s) {
+    print("non-empty")
+} else {
+    print("empty")             // falsy：进入 else
+}
 
 let m: Map<string, int> = #{}
-if (m) { ... }                  // falsy：空 Map
+if (m) {
+    print("non-empty map")
+} else {
+    print("empty map")         // falsy：空 Map
+}
 
 let a: int? = null
 let b = a ?? 0                  // null 合并：b = 0
@@ -495,16 +503,24 @@ Literals default to `float`.
 | Everything else (including `0.0001`, non-empty strings/collections, object references) | **truthy** |
 
 ```xray @id=types-truthy-falsy
-let x: int? = maybe_int()
+let x: int? = 41
 if (x) {                  // truthy context: enters when x is neither null nor 0
     print(x + 1)          // x is narrowed to int in this branch
 }
 
 let s: string = ""
-if (s) { ... } else { ... }    // falsy: enters else
+if (s) {
+    print("non-empty")
+} else {
+    print("empty")             // falsy: enters else
+}
 
 let m: Map<string, int> = #{}
-if (m) { ... }                  // falsy: empty Map
+if (m) {
+    print("non-empty map")
+} else {
+    print("empty map")         // falsy: empty Map
+}
 
 let a: int? = null
 let b = a ?? 0                  // null coalescing: b = 0

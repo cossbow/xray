@@ -193,9 +193,17 @@ ReturnValue ::= Expression | '(' Expression (',' Expression)+ ')'
 ```
 
 ```xray @id=stmt-return
-return                 // 隐式返回 ()（Unit）
-return 42
-return (a, b)          // 多返回值，必须用括号包裹元组
+fn done() {
+    return                 // 隐式返回 ()（Unit）
+}
+
+fn answer() -> int {
+    return 42
+}
+
+fn pair(a: int, b: int) -> (int, int) {
+    return (a, b)          // 多返回值，必须用括号包裹元组
+}
 ```
 
 > **注意**：多返回值必须用元组形式 `return (a, b)`；裸逗号 `return a, b` 是编译错误（`E0801`）。
@@ -474,9 +482,17 @@ ReturnValue ::= Expression | '(' Expression (',' Expression)+ ')'
 ```
 
 ```xray @id=stmt-return
-return                 // implicitly returns () (Unit)
-return 42
-return (a, b)          // multi-value return must wrap a tuple in parens
+fn done() {
+    return                 // implicitly returns () (Unit)
+}
+
+fn answer() -> int {
+    return 42
+}
+
+fn pair(a: int, b: int) -> (int, int) {
+    return (a, b)          // multi-value return must wrap a tuple in parens
+}
 ```
 
 > **Note**: multi-value returns must use the tuple form `return (a, b)`; the bare-comma form `return a, b` is the compile error `E0801`.

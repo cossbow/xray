@@ -319,7 +319,8 @@ RangeExpr ::= AddExpr ('..' AddExpr)?
 ```xray @id=expr-range
 0..10                  // 0..10，左闭右开（包含 0，不包含 10）
 let r = 1..100
-for (i in 0..n) { ... }
+let n = 10
+for (i in 0..n) { print(i) }
 ```
 
 - 类型 `Range`（仅 int 范围）。
@@ -525,7 +526,7 @@ MatchArm ::= Pattern ('if' Expr)? '->' Expression
 ```
 
 ```xray @id=expr-match
-let result = match x {
+let result = match (x) {
     1 -> "one",
     2, 3, 4 -> "few",                 // 多值
     10..20 -> "teen",                 // 范围
@@ -905,7 +906,8 @@ RangeExpr ::= AddExpr ('..' AddExpr)?
 ```xray @id=expr-range
 0..10                  // 0..10, left-closed right-open (includes 0, excludes 10)
 let r = 1..100
-for (i in 0..n) { ... }
+let n = 10
+for (i in 0..n) { print(i) }
 ```
 
 - Type: `Range` (int ranges only).
@@ -1111,7 +1113,7 @@ MatchArm ::= Pattern ('if' Expr)? '->' Expression
 ```
 
 ```xray @id=expr-match
-let result = match x {
+let result = match (x) {
     1 -> "one",
     2, 3, 4 -> "few",                 // multi-value
     10..20 -> "teen",                 // range
