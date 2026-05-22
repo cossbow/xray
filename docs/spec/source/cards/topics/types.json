@@ -8,7 +8,11 @@
     "string",
     "bool",
     "nullable",
-    "type"
+    "type",
+    "tuple",
+    "unit",
+    "union",
+    "Result"
   ],
   "sections": [
     {
@@ -34,6 +38,12 @@
       "heading": "Union types",
       "fences": [
         "types-union-basic"
+      ]
+    },
+    {
+      "heading": "Tuple types",
+      "fences": [
+        "types-tuple"
       ]
     },
     {

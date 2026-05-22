@@ -2,7 +2,7 @@
 id: types
 title: Types
 spec: #2-类型系统-type-system
-aliases: [int, float, string, bool, nullable, type]
+aliases: [int, float, string, bool, nullable, type, tuple, unit, union, Result]
 ---
 ## Types
 
@@ -46,6 +46,32 @@ const ch: Channel<int> = new Channel<int>(10)
 ```xray
 let v: int | string = 42
 v = "hello"             // OK
+```
+
+### Tuple types
+```xray
+// Literals
+let t = (1, 2, 3)                 // type inferred as (int, int, int)
+let h = (10, "hi", true)          // heterogeneous tuple
+let single = (99,)                // single-element tuple: note trailing comma
+
+// Type annotation
+let p: (int, string) = (7, "ok")
+
+// Field access: .N (N is a compile-time constant integer index)
+let first = t.0                   // 1
+let mid   = t.1                   // 2
+let nest  = ((1, 2), (3, 4))
+let a     = nest.0.0              // 1
+let b     = nest.1.1              // 4
+
+// Function return and destructuring
+fn divmod(a: int, b: int) -> (int, int) { return (a / b, a % b) }
+let (q, r) = divmod(17, 5)        // tuple destructure
+
+// Generic
+fn pair<A, B>(a: A, b: B) -> (A, B) { return (a, b) }
+let p2 = pair(1, "x")             // (int, string)
 ```
 
 ### Type inference

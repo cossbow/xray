@@ -2,7 +2,7 @@
 id: enum
 title: Enum
 spec: #56-enum-声明
-aliases: [enums, enumeration]
+aliases: [enums, enumeration, adt, payload, variant, Result, Ok, Err]
 ---
 ## Enum
 

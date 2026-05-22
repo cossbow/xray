@@ -4,7 +4,13 @@
   "spec_anchor": "#56-enum-声明",
   "aliases": [
     "enums",
-    "enumeration"
+    "enumeration",
+    "adt",
+    "payload",
+    "variant",
+    "Result",
+    "Ok",
+    "Err"
   ],
   "sections": [
     {

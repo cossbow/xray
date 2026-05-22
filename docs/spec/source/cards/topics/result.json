@@ -1,0 +1,48 @@
+{
+  "id": "result",
+  "title": "Result<T, E>",
+  "spec_anchor": "#82-resultt-e",
+  "aliases": [
+    "Result",
+    "Ok",
+    "Err",
+    "try!",
+    "try?",
+    "catch!",
+    "error_handling",
+    "parse_error",
+    "adt"
+  ],
+  "lead": "Result<T, E> is the explicit error-return track: an ADT enum with Ok(T) and Err(E).",
+  "sections": [
+    {
+      "heading": "ADT shape",
+      "markdown": "`Result<T, E>` is a prelude ADT enum: `Ok(T)` carries success, `Err(E)` carries failure. Prefer an ADT enum for `E` when the failure causes are enumerable, so `match` can check exhaustiveness."
+    },
+    {
+      "heading": "Payload enum form",
+      "fences": [
+        "decl-enum-payload"
+      ]
+    },
+    {
+      "heading": "Common methods",
+      "bullets": [
+        "`isOk()` / `isErr()` inspect the variant",
+        "`ok()` returns `T?`; `err()` returns `E?`",
+        "`unwrap()` extracts `Ok` or throws on `Err` when `E` is an `Exception` subtype",
+        "`unwrapOr(default)` and `unwrapOrElse(handler)` provide fallback values",
+        "`map(fn)` transforms `Ok`; `mapErr(fn)` transforms `Err`; `andThen(fn)` chains Results"
+      ]
+    },
+    {
+      "heading": "Bridge keywords",
+      "bullets": [
+        "`try! result` early-returns `Err` inside a Result-returning function",
+        "`try! result` throws when crossing from Result into the exception track and `E` is an `Exception` subtype",
+        "`try? result` converts `Err` to `null` and discards the cause",
+        "`catch! expr` catches exceptions and converts them to `Result.Err`"
+      ]
+    }
+  ]
+}
