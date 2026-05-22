@@ -51,7 +51,7 @@ MCP 重构不提供迁移期，不保留旧行为。
 
 - ~~`xray_check` / `xray_diagnostics` 重复~~ 已完成：合并为 `xray_analyze`。
 - ~~tool result 缺少 `structuredContent` / `outputSchema`~~ 已完成主要 tools，包括 `xray_run`。
-- `xray_format` 语法错误路径返回纯 text 错误，该返回 structured diagnostics。
+- ~~`xray_format` 语法错误路径返回纯 text 错误~~ 已完成：语法错误返回 structured diagnostics。
 - ~~`xray_run` 会污染 MCP stdout、缺少 timeout/outputSchema~~ 已完成：isolate stdout 捕获、timeout、output limit、structured output 已落地。
 - `xray_run` 已有 unit-level 安全边界测试和 transcript 级 stdout 协议隔离测试；仍需更细粒度 allowlist 行为验证。
 - `tools/call` 参数错误已通过 schema validator 返回 JSON-RPC `invalid params`；后续可补 object / array 的浅层结构校验。

@@ -25,7 +25,7 @@
 | Tool | 默认启用 | 说明 |
 |---|---:|---|
 | `xray_analyze` | 是 | Parser + analyzer 诊断，返回 text summary 和 structured diagnostics |
-| `xray_format` | 是 | 格式化 Xray 源码，返回 formatted code 和结构化字段 |
+| `xray_format` | 是 | 格式化 Xray 源码，返回 formatted code；语法错误返回 structured diagnostics |
 | `xray_syntax_lookup` | 是 | 查询 generated syntax topic |
 | `xray_stdlib_search` | 是 | 查询 generated stdlib module / symbol index |
 | `xray_definition` | 是 | 综合查询 syntax topic 与 stdlib symbol |
