@@ -1,6 +1,7 @@
 ---
 id: testing
 title: Testing
+spec: #12-测试系统-testing
 aliases: [test, assert, assert_eq, unit_test]
 ---
 ## Testing

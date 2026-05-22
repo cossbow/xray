@@ -1,6 +1,7 @@
 ---
 id: functions
 title: Functions
+spec: #52-fn-函数声明
 aliases: [fn, function, arrow, closure, lambda, params]
 ---
 ## Functions

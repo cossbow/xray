@@ -1,6 +1,7 @@
 ---
 id: enum
 title: Enum
+spec: #56-enum-声明
 aliases: [enums, enumeration]
 ---
 ## Enums

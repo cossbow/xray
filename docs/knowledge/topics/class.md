@@ -1,6 +1,7 @@
 ---
 id: class
 title: Class
+spec: #53-class-声明
 aliases: [classes, oop, inheritance, extends, override, constructor]
 ---
 ## Classes

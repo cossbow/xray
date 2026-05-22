@@ -1,6 +1,7 @@
 ---
 id: string
 title: String
+spec: #315-字符串插值
 aliases: [strings, string_methods, interpolation, template]
 ---
 ## Strings

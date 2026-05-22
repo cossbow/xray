@@ -1,6 +1,7 @@
 ---
 id: concurrency_rules
 title: Concurrency Safety Rules
+spec: #1011-并发安全模型
 aliases: [shared_rules, sharing, move, safety, concurrent]
 ---
 ## Concurrency Safety Rules

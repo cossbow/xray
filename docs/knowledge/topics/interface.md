@@ -1,6 +1,7 @@
 ---
 id: interface
 title: Interface
+spec: #55-interface-与-implements
 aliases: [interfaces, implements]
 ---
 ## Interfaces

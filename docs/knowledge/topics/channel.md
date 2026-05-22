@@ -1,6 +1,7 @@
 ---
 id: channel
 title: Channel
+spec: #105-channel
 aliases: [channels, chan, Channel, send, recv, buffered]
 ---
 ## Channel

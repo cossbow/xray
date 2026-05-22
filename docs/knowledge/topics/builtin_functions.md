@@ -1,6 +1,7 @@
 ---
 id: builtin_functions
 title: Built-in Functions
+spec: #13-内置函数-built-in-functions
 aliases: [builtin, print, dump, typeof, builtins]
 ---
 ## Built-in Functions

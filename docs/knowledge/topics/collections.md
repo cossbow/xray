@@ -1,6 +1,7 @@
 ---
 id: collections
 title: Collections
+spec: #24-复合类型
 aliases: [array, map, set, list, dict, dictionary, json, bytes]
 ---
 ## Collections

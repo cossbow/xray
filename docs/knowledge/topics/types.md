@@ -1,6 +1,7 @@
 ---
 id: types
 title: Types
+spec: #2-类型系统-type-system
 aliases: [int, float, string, bool, nullable, type]
 ---
 ## Types

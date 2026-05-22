@@ -1,6 +1,7 @@
 ---
 id: modules
 title: Modules & Imports
+spec: #11-模块系统-modules
 aliases: [import, export, module, require, package]
 ---
 ## Modules & Imports

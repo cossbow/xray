@@ -1,6 +1,7 @@
 ---
 id: struct
 title: Struct
+spec: #54-struct-声明
 aliases: [structs, value_type]
 ---
 ## Structs

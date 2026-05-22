@@ -1,6 +1,7 @@
 ---
 id: coroutine
 title: Coroutines & Concurrency
+spec: #10-并发与协程-concurrency
 aliases: [go, goroutine, goroutines, await, task, async, concurrency, scope, select, defer]
 ---
 ## Coroutines & Concurrency

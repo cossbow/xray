@@ -1,6 +1,7 @@
 ---
 id: generics
 title: Generics
+spec: #9-泛型-generics
 aliases: [generic, type_parameter, template]
 ---
 ## Generics

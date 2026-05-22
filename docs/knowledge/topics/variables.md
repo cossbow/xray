@@ -1,6 +1,7 @@
 ---
 id: variables
 title: Variables
+spec: #51-let-const-shared
 aliases: [let, const, var, shared, declaration]
 ---
 ## Variables
