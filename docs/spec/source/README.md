@@ -65,6 +65,17 @@ English reference text.
 
 card 中的 `fences` 字段引用 `sections/*.md` 里带 `@id` 的代码块；这样同一个示例可同时渲染到 SPEC 和 MCP knowledge，避免复制漂移。
 
+## sections / cards 同步规则
+
+`sections/*.md` 和 `cards/**/*.json` 需要一起维护，但职责不同：
+
+- `sections/*.md` 是语言语义、详细解释和权威示例的主文档源。
+- `cards/**/*.json` 是 MCP knowledge 的索引与投影源，只负责检索入口、摘要组织和示例引用。
+- 新增或修改语言语法 / 语义时，先更新 `sections/*.md` 的中文和英文正文，再更新相关 card 的 `title`、`aliases`、`lead`、`spec_anchor` 和分段组织。
+- 需要在 MCP knowledge 中出现的 Xray 示例，应优先写在 `sections/*.md` 的 `xray @id=...` 代码块中，再由 card 的 `fences` 引用。
+- card 不应复制一份独立 Xray 示例来表达同一语义，避免 `sections`、SPEC 和 MCP knowledge 漂移。
+- 只调整 MCP 检索关键词或展示顺序时，可以只改 card；但不得引入 `sections` 中不存在或相互冲突的新语义。
+
 ## 质量门禁
 
 `tests/mcp/test_knowledge_generation.py` 会检查生成后的 SPEC 是否保持最新，并确保不会低于当前质量基线：
