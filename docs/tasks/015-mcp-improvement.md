@@ -180,138 +180,35 @@ Prompt 已进入 smoke test，但内容仍是 C 中手写摘要。
 - 新增 stdlib builtin 后必须确保 analyzer builtin dump 和 generated MCP table 同步。
 - 每次修改后运行 MCP knowledge 回归和完整 `ctest`。
 
-## 2026-05-22 源码审计发现
+## 2026-05-22 源码审计发现（已全部落地）
 
-下面 16 条来自对 `src/app/mcp/` 的逐文件源码审计，独立于上面的业务 backlog。开发原则：Xray 无外部用户、可大胆重写、不保留旧接口、不做兼容层；每条直接采用最佳设计。
+16 条逐文件审计已全部修复并通过完整 `ctest`（120/120）与回归（318/318）。下面只保留每条的当前落地点，方便后续从代码反查动机。
 
-### P0 — 协议正确性偏差
+### P0 — 协议正确性偏差（全部完成）
 
-**#1 `progressToken` 只接受 number，不支持 string**
+- **#1 `progressToken` 支持 string | number**：`XmcpCallContext.progress_token` 改为 `XrJsonValue *`，dispatch 时 `xjson_clone(_meta.progressToken)`，handler 透传到 `xmcp_send_progress_notification`。详见 `src/app/mcp/xmcp_registry.h`、`src/app/mcp/xmcp_server.c::xmcp_send_progress_notification`。
+- **#2 `prompts/get` role 合并**：`build_prompt_messages` 输出单条 `role: "user"` 消息，把 `SYSTEM_PREAMBLE + system_text` 拼到用户输入之前。详见 `src/app/mcp/xmcp_prompts.c::build_prompt_messages`。
+- **#3 lifecycle 入表**：`XmcpMethodEntry.required_state` ∈ `{XMCP_LC_ANY, XMCP_LC_MUST_BE_CREATED, XMCP_LC_MUST_BE_READY}`，dispatch 表自洽；不再 `strcmp("initialize")`。详见 `src/app/mcp/xmcp_server.c::METHOD_TABLE`。
 
-MCP 规范 `ProgressToken = string | number`，多数 client（含 Claude Desktop、Cursor）发字符串 UUID。当前实现把 token 装在 `int64_t progress_token` 字段里、用 `xjson_get_int_or` 提取，字符串 token 被静默丢弃，progress 永不回报。
+### P1 — 性能 / 架构（全部完成）
 
-最佳设计：`XmcpCallContext.progress_token` 改成 `XrJsonValue *`（call 入口 `xjson_clone` 一份，call 结束统一释放）；`xmcp_send_progress_notification` 接收 `XrJsonValue *progress_token` 直接挂到 params 里；不存在时传 `NULL`。哨兵 `-1` 取消。
+- **#4 schema 懒构建**：每个 `xmcp_schema_*()` 内部 `static XrJsonValue *cached`，首次构建后挂指针，`tools/list` 输出时 `xjson_clone`，validator 直接只读访问。详见 `src/app/mcp/xmcp_tools_schema.c`。
+- **#5 解除 MCP→CLI 反向依赖**：isolate-profile 工厂下沉到 `src/api/xisolate_profile.{c,h}`（`xr_isolate_profile_new` / `XR_ISOLATE_PROFILE_*`），`cmd_mcp_server` 移到 `src/app/cli/xcmd_mcp_server.c`，MCP 不再 `#include "../cli/*"`。
+- **#6 `xray://stdlib/{module}` 直查**：新增 `xmcp_knowledge_get_module(kb, name)`，`read_stdlib_resource` 直接返回模块 body，不再走全文搜索。详见 `src/app/mcp/xmcp_knowledge.c`、`src/app/mcp/xmcp_resources.c::read_stdlib_resource`。
+- **#7 容量约束变 fail-fast**：`xmcp_knowledge_load` 用 `XR_DCHECK` 在构建期断言 topic/module 不超容量；`xmcp_knowledge_search_stdlib` 在 8KB 截断处显式追加 `_(truncated: N of M matches shown)_`。
+- **#8 in-memory 捕获**：`xray_run` 走 `open_memstream`（POSIX）/ `tmpfile`（Windows），封装在 `XmcpRunCapture` + `xmcp_run_capture_open/_finish`。详见 `src/app/mcp/xmcp_tools_run.c`。
+- **#10 handler NULL 防御**：所有 `xjson_get_string` 之后都先判 NULL，再判空串；validator 同时拦截缺失 required 字段。
+- **#16 initialize 读 `clientInfo`**：记录 `clientInfo.name` 到 stderr，为后续版本协商打基础。详见 `src/app/mcp/xmcp_protocol.c::xmcp_handle_initialize`。
 
-**#2 `prompts/get` 两条消息都是 `role: "user"`**
+### P2 — 可维护性 / 一致性（全部完成）
 
-`build_prompt_messages` 注释写"system message"，role 却写 `user`。MCP `PromptMessage.role` 只允许 `user | assistant`，不允许 `system`。当前两条都是 `user`，client 无法区分指令和实际输入。
+- **#9 拆分 `xmcp_tools.c`**：原 1388 行单文件拆成 `xmcp_tools.c`（dispatch+validator+table）/ `xmcp_tools_schema.c` / `xmcp_tools_lang.c` / `xmcp_tools_run.c` / `xmcp_tools_kb.c` + 私有头 `xmcp_tools_internal.h`，每个文件 200–400 行。
+- **#11 删除 cursor 分页**：`xmcp_handle_tools_list` 无条件返回全部工具，与 `resources/list` / `prompts/list` 行为统一；`XMCP_PAGE_SIZE` 死代码删除。
+- **#12 progress 字段整型统一**：`xmcp_send_progress_notification(server, XrJsonValue *progress_token, int64_t progress, int64_t total)`。
+- **#13 `tool_xray_definition` 抽 helper**：`try_definition_stdlib(kb, symbol, query, module_filter, &search_failed)` 居中处理 `(text==NULL ? abort : match_count>0 ? consume : free)` 三分支，主体走线性三段策略。详见 `src/app/mcp/xmcp_tools_kb.c`。
+- **#14 评分权重落表**：`XmcpScoreTier` 结构体 + 六个具名常量（`XMCP_SCORE_SYMBOL_NAME` 等），`score_symbol` / `score_module` 改写为 `score_text_with_tier`。详见 `src/app/mcp/xmcp_knowledge.c`。
+- **#15 resources reader 对称**：`read_topic_resource` 与 `read_stdlib_resource` 都返回 `const char *`，调用处不再分类释放。
 
-最佳设计：合并成单条 user message，把 SYSTEM_PREAMBLE + system_text 拼到 user_text 之前。
+### 未列入（仍在原 backlog 推进）
 
-**#3 `mcp_dispatch` 用 `strcmp("initialize")` 特判生命周期**
-
-整个 dispatch 已经表驱动，唯独"initialize 不可重入"是字符串比较。
-
-最佳设计：`XmcpMethodEntry` 加 `XmcpLifecycleRequirement required_state` 字段（枚举：`ANY` / `MUST_BE_CREATED` / `MUST_BE_READY`），`needs_init` 合并进去；dispatch 表自洽。
-
-### P1 — 性能 / 架构
-
-**#4 `tool->build_schema()` 每次请求都重建 + 释放 JSON DOM**
-
-`tools/list`、`tools/call` 参数校验都会触发。Schema 是不可变常量，却在每次请求时分配/释放整棵树。
-
-最佳设计：把 `build_schema / build_output_schema` 改成 lazy getter（首次调用建好挂静态指针，后续返回同一指针）。调用方只读不释放。`tools/list` 输出时 `xjson_clone`；validator 直接读静态对象。
-
-**#5 `xmcp_server.c` 反向依赖 `app/cli/*`**
-
-CLI 和 MCP 都是 `src/app/` 兄弟模块，不应互相依赖。当前 MCP 通过 `xcli_isolate.h` 取 isolate 工厂，通过 `xcli_spec.h / xcli_diag.h` 实现 `cmd_mcp_server` CLI 入口。
-
-最佳设计：
-- CLI 入口 `cmd_mcp_server` 抽到 `src/app/cli/xcmd_mcp_server.c`，反方向依赖 `xmcp_server.h`；
-- `xr_cli_isolate_new(profile)` 这种 isolate factory 下沉到 `src/api/`（或新设的共享层），CLI 和 MCP 都从公共层取。
-
-**#6 `xray://stdlib/{module}` 资源用全文搜索代替直接取模块**
-
-`read_stdlib_resource` 把模块名同时作为 query 和 module_filter 走 `xmcp_knowledge_search_stdlib`，等于让排序、tokens 切分、8KB 文本生成替代了 `O(1)` 取 body。
-
-最佳设计：在 `xmcp_knowledge.[ch]` 加 `xmcp_knowledge_get_module(kb, name)` 返回 `const XmcpModule *`；resources 直接用，搜索路径只留给 `xray_stdlib_search` 工具。
-
-**#7 `xmcp_knowledge_search_stdlib` 静默截断 + `xmcp_knowledge_load` 静默丢失**
-
-- search_stdlib 用 8KB 固定 buffer，超出 `break` 但不告知，`structuredContent.matchCount` 与 `text` 不一致。
-- knowledge_load 在 topics > 128 / modules > 64 时 silent break，新 topic 会神秘消失。
-
-最佳设计：
-- search_stdlib 改成动态 buffer（`xr_arena_vec` 或 `xr_realloc`），或在截断处明确追加 `\n_(truncated)_\n`；
-- knowledge_load 用 `XR_DCHECK` 断言不超容量，构建期失败 fail-fast。
-
-**#8 `xray_run` 用 `tmpfile()` 落临时文件**
-
-每次调用都建 `/tmp/...`，再 fseek/fread 回内存，与"轻量沙箱"定位冲突。
-
-最佳设计：POSIX 走 `open_memstream(&buf, &size)`，Windows 走 `tmpfile()` 兜底（或基于 `xarena_vec` 自实现 in-memory `FILE*`）。隐藏在一个 `xmcp_capture_open / xmcp_capture_finish` 小工具里。
-
-### P2 — 可维护性 / 一致性
-
-**#9 `xmcp_tools.c` 1299 行，开始巨石化**
-
-虽然没破 3000 行红线，但已经混合了 table、schema builder、validator、result helper、6 个 handler、tools/list、tools/call dispatch。
-
-最佳设计：拆 5 个文件
-- `xmcp_tools.c`：table、tools/list、tools/call dispatch、validator
-- `xmcp_tools_schema.c`：所有 `schema_*` builder
-- `xmcp_tools_lang.c`：`tool_xray_analyze` / `tool_xray_format`（依赖 frontend）
-- `xmcp_tools_run.c`：`tool_xray_run`（依赖 isolate / runtime）
-- `xmcp_tools_kb.c`：`tool_xray_syntax_lookup` / `tool_xray_stdlib_search` / `tool_xray_definition`
-
-**#10 tool handler 缺 NULL 防御**
-
-`xjson_get_string` 在 key 缺失或类型错误时返回 NULL；handler 直接 `code[0] == '\0'`，依赖 schema validator 提前拦截。一旦 schema 写错就 SIGSEGV。
-
-最佳设计：所有 `xjson_get_string` 后写成 `if (!s || s[0] == '\0')`，或在 validator 末尾对 string-typed required 字段追加 `XR_DCHECK(value->type == XR_JSON_STRING)`。
-
-**#11 `tools/list` 的 cursor 分页是死代码**
-
-`XMCP_PAGE_SIZE = 1000`，但 `XMCP_REGISTRY_MAX_TOOLS = 16`，永远不会触发。同时 cursor 按 tool name 字典序但 table 按业务顺序排列，真触发也会出错。
-
-最佳设计：删除 cursor 逻辑，无条件返回全部工具；`resources/list` / `prompts/list` 已经无分页，统一行为。未来真要分页再用 table index 重写。
-
-**#12 progress 字段整型不一致**
-
-`xmcp_send_progress_notification(int64_t progress_token, int progress, int total)`：token 是 int64，progress/total 是 int。规范都是 number。
-
-最佳设计：三者统一 `int64_t`。
-
-**#13 `tool_xray_definition` 控制流错综**
-
-两段 `if (text) { match==0 free else use } else error` 重复，加上 module/symbol 切分的二次搜索，5 个 return 点各自管 `xr_free`，新增搜索路径容易漏。
-
-最佳设计：抽 `static XrJsonValue *try_lookup_stdlib(kb, query, module_filter)`，命中返回 result（已 strdup），未命中返回 NULL。definition 主体变成线性 `if (...) return; if (...) return; return not_found;`。
-
-**#14 `xmcp_knowledge.c` 评分常量散落**
-
-`score_symbol` 和 `score_module` 函数各自硬编码 6 个权重数字（`140 / 100 / 55 / 70 / 45 / 25 / 50 / 30 / 18 / 35 / 20 / 10`），无文档。
-
-最佳设计：顶部定义 `XmcpScoreWeights` 表，三档（exact / contains / token）×五个字段（symbol_name / signature / symbol_summary / module_name / module_summary / module_body）；后续调权只改一处。
-
-**#15 `xmcp_resources.c` 两个 reader 返回类型不对称**
-
-`read_topic_resource` 返回 `const char *`（静态），`read_stdlib_resource` 返回 `char *`（owning）。调用处用两个变量分头管理释放。
-
-最佳设计：结合 #6，`read_stdlib_resource` 改为返回 `const char *`（直接拿模块 body），调用处的 `dyn_text` 变量、双分支判断、`xr_free` 全部消失。
-
-**#16 `xmcp_handle_initialize` 完全忽略 `params`**
-
-未读 `clientInfo.name/version` 和 `protocolVersion`。MCP 客户端识别（Claude Desktop / Cursor / Continue）和未来版本协商无从下手。
-
-最佳设计：至少把 client name 记到 info-level log，为 backlog 的协议版本协商打基础：
-
-```c
-const char *client_name = NULL;
-XrJsonValue *client_info = params ? xjson_get_object(params, "clientInfo") : NULL;
-if (client_info)
-    client_name = xjson_get_string(client_info, "name");
-mcp_log(server, 2, "initialize from client: %s", client_name ? client_name : "(unknown)");
-```
-
-### 实施顺序
-
-每条修改后跑 `cmake --build build -j8 --target test_mcp_protocol test_mcp_transport` + 完整 `ctest`，必要时跑 `tests/mcp/test_protocol_transcript.py`。
-
-第一批（P0 协议正确性，安全）：#3 → #11 → #12（最便宜，无外部行为变化）→ #2 → #1。
-
-第二批（P1 架构 / 性能）：#16 → #4 → #7 → #6 + #15（合并）→ #10 → #8 → #5。
-
-第三批（P2 重构）：#9 → #13 → #14。
-
-未列入：015 既有 backlog 的 #2（协议版本协商）、#3 object/array 浅校验、#4 runner 内存配额、#5 ranking 多权重、#6 completion/complete、#7 prompt 内容生成化、#8 文档收敛——这些保留在原 backlog 推进。
+015 既有 backlog：协议版本协商、object/array 浅校验、runner 内存配额、ranking 多权重、`completion/complete`、prompt 内容生成化、文档收敛。
