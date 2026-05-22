@@ -283,107 +283,272 @@ dump(some_obj)                 // 调试输出，含类型信息与结构布局
 
 ## 4. Statements
 
-### 4.1 Blocks and Expression Statements
+> Source of truth: `src/frontend/parser/xparse_stmt.c`, `src/frontend/parser/xast_nodes_stmt.h`.
+
+Xray statements are separated by `\n` or `;`; the trailing `;` is optional in most positions, only the three sections of a `for` loop (init / cond / step) require `;` separators.
+
+### 4.1 Expression Statements and Blocks
+
+```ebnf
+ExprStmt ::= Expression (';' | LineBreak)
+Block    ::= '{' Statement* '}'
+```
 
 ```xray
-{
-    let x = 1
-    print(x)
+foo()                  // expression statement
+x = 1                  // assignment expression as a statement
+{                      // block
+    let y = 2
+    y + 1              // expression with discarded result
 }
 ```
 
-A block introduces a lexical scope. Expression statements evaluate an expression for side effects.
+**Note**: a block is **not an expression** — it has no value. To get a value out of a block, use `match` or wrap it in an immediately-invoked function.
 
-### 4.2 `if`
+### 4.2 `if` / `else`
+
+```ebnf
+IfStmt ::= 'if' '(' Expression ')' Block ElseIfChain? ElseClause?
+ElseIfChain ::= ('else' 'if' '(' Expression ')' Block)+
+ElseClause  ::= 'else' Block
+```
 
 ```xray
-if (cond) {
-    a()
-} else if (other) {
-    b()
+if (x > 0) {
+    print("positive")
+} else if (x == 0) {
+    print("zero")
 } else {
-    c()
+    print("negative")
 }
 ```
 
-Conditions are parenthesized.
+**Constraints**:
+- The condition **must** be parenthesized (unlike Go/Rust).
+- The condition is evaluated under truthy/falsy context (see §2.3.3); explicit `bool` expressions or comparisons such as `x != null` / `x is T` are recommended for readability.
+- Branch bodies must be blocks `{...}`; **no** single-statement-without-braces form.
+- `if` is not an expression; for an expression form use the ternary `? :` or `match`.
 
 ### 4.3 `while`
 
+```ebnf
+WhileStmt ::= 'while' '(' Expression ')' Block
+```
+
 ```xray
-while (cond) {
-    step()
+let i = 0
+while (i < 10) {
+    print(i)
+    i++
 }
 ```
 
-### 4.4 `for` and `for-in`
+There is no `do-while` form.
 
-```xray
-for (let i = 0; i < 10; i++) { print(i) }
-for (v in values) { print(v) }
-for (k, v in map) { print(k, v) }
-for ((i, v) in arr.entries()) { print(i, v) }
+### 4.4 `for` (C-style) and `for-in`
+
+#### C-style `for`
+
+```ebnf
+ForStmt ::= 'for' '(' ForInit? ';' Expression? ';' ForStep? ')' Block
+ForInit ::= VarDecl | ExprStmt
+ForStep ::= Expression (',' Expression)*
 ```
 
-Single-variable iteration yields elements/keys depending on container type. Pair iteration yields `(index, element)` for arrays/strings and `(key, value)` for maps/Json objects.
+```xray
+for (let i = 0; i < 10; i++) {
+    print(i)
+}
+for (let i = 0, j = 100; i < j; i++, j--) { ... }
+```
+
+- Variables declared in `ForInit` are scoped to the loop body.
+- All three sections may be omitted: `for (;;)` is an infinite loop.
+
+#### Single-variable `for-in`
+
+```ebnf
+ForInStmt ::= 'for' '(' Identifier 'in' Expression ')' Block
+```
+
+```xray
+for (item in [1, 2, 3]) { print(item) }
+for (i in 0..n) { print(i) }                  // range iteration (half-open)
+for (ch in "hello") { print(ch) }             // string characters (by codepoint)
+for (key in someMap) { print(key) }           // single variable over Map → key
+for (key in someJson) { print(key) }          // single variable over Json → key
+for (day in Color) { print(day.name) }        // enum iteration (declaration order)
+for (_ in 0..n) { count++ }                   // discard with placeholder
+```
+
+#### Two-variable `for-in` destructuring
+
+Xray supports two equivalent two-variable forms:
+
+```ebnf
+ForInPairStmt ::= 'for' '(' Identifier ',' Identifier 'in' Expression ')' Block
+              |  'for' '(' '(' Identifier ',' Identifier ')' 'in' Expression ')' Block
+```
+
+```xray
+// Form A: two bare identifiers (more common)
+for (k, v in someMap) { print("${k}=${v}") }     // Map → (key, value)
+for (i, e in someArray) { print("${i}: ${e}") }  // Array → (index, element)
+for (i, c in "hello") { print("${i}:${c}") }     // string → (index, char)
+
+// Form B: tuple-parenthesized (pairs well with .entries())
+for ((i, e) in someArray.entries()) { print("${i}=${e}") }
+for ((i, c) in "hi".entries()) { print("${i}-${c}") }
+```
+
+Iteration source / yield mapping:
+
+| Collection type | Single-variable yield | Two-variable yield |
+|---|---|---|
+| `Array<T>` / `T[]` | element | (index, element) |
+| `Map<K, V>` | key | (key, value) |
+| `Json` | key (string) | (key, value) |
+| `string` | char (1-codepoint string) | (index, char) |
+| `Range` (`a..b`) | int | — |
+| Enum type | EnumValue | — |
+| Custom `Iterator<T>` | T | — |
+
+#### Custom iterators
+
+Implement an `iterator()` method that returns an `Iterator<T>` protocol object (with `hasNext()` and `next()`) and the value becomes usable in `for-in`. See §14.15.
 
 ### 4.5 `match` Statement
 
+```ebnf
+MatchStmt ::= 'match' '(' Expression ')' '{' MatchArm (','? MatchArm)* ','? '}'
+MatchArm  ::= Pattern ('if' '(' Expression ')')? '->' (Expression | Block)
+```
+
+**Key syntax**:
+- The matched expression **must** be parenthesized: `match (x) {...}`.
+- Commas between arms are **optional** — both styles can be mixed in the same `match` (omitting commas is more common).
+- Guard expressions following `if` must be parenthesized: `n if (n > 0)`.
+
 ```xray
 match (action) {
-    "start" -> start()
-    "stop" -> stop()
-    _ -> print("unknown")
+    "start" -> {
+        log.info("starting")
+        start_engine()
+    }
+    "stop" -> stop_engine()
+    _ -> log.warn("unknown")
 }
 ```
 
-`match` can be used as a statement or expression.
+`match` may serve as either a statement or an expression (see §3.13); when used as an expression, the arm body must be a single expression or end with one as the last expression of a block.
 
-### 4.6 `break` and `continue`
+For pattern details see [§6](#6-patterns).
 
-`break` and `continue` are only valid inside loops. They are not labeled.
+### 4.6 `break` / `continue`
+
+```xray
+break                  // exit the innermost loop
+continue               // proceed to the next iteration
+```
+
+**Constraints**:
+- Must appear inside a `while` / `for`; otherwise the compile errors `E0304` / `E0305`.
+- `break` / `continue` inside a `match` does **not** affect `match` itself; it exits the enclosing loop.
+- **No labeled** break/continue (unlike Java/Rust).
 
 ### 4.7 `return`
 
-```xray
-return
-return 42
-return (a, b)
+```ebnf
+ReturnStmt ::= 'return' ReturnValue? (';' | LineBreak)
+ReturnValue ::= Expression | '(' Expression (',' Expression)+ ')'
 ```
 
-Multiple return values are represented as a tuple and must be parenthesized.
+```xray
+return                 // implicitly returns () (Unit)
+return 42
+return (a, b)          // multi-value return must wrap a tuple in parens
+```
 
-### 4.8 `throw`, `try`, `catch`, `finally`
+> **Note**: multi-value returns must use the tuple form `return (a, b)`; the bare-comma form `return a, b` is the compile error `E0801`.
+
+**Constraints**:
+- Allowed only inside a function body (including closures); a top-level `return` is the compile error `E0306`.
+- The returned value's type must be compatible with the function's declared return type.
+
+### 4.8 `throw` / `try` / `catch` / `finally`
+
+```ebnf
+ThrowStmt ::= 'throw' Expression
+
+TryStmt       ::= 'try' Block CatchClause* FinallyClause?
+CatchClause   ::= 'catch' '(' Identifier (':' Type)? ')' Block
+FinallyClause ::= 'finally' Block
+```
 
 ```xray
 try {
     risky()
-} catch (e: Exception) {
-    print(e.message)
+} catch (e) {
+    log.error("failed:", e.message)
 } finally {
     cleanup()
 }
+
+throw new Exception("error message")        // ✅ Exception-derived
+throw new HttpError(500, "internal")        // ✅ user Exception subclass
+// throw "msg"                              // ❌ E0370: must be Exception-derived
 ```
 
-A `try` statement must have at least one `catch` or a `finally` block.
+**Semantics**:
+- A `try` must be followed by at least one of `catch` or `finally`.
+- The `e` in `catch (e)` defaults to type `Exception`; a type annotation `catch (e: HttpError)` performs type filtering; multiple `catch` clauses match in declaration order.
+- `finally` is **always executed**, regardless of whether an exception was thrown or `return` was used.
+- The static type of the `throw` operand must be `Exception`-derived (`E0370`).
+- For full exception semantics see [§8](#8-error-handling).
 
 ### 4.9 `defer`
 
+```ebnf
+DeferStmt ::= 'defer' (Expression | Block)
+```
+
 ```xray
-fn read(path: string) -> string {
+fn read_file(path: string) -> string {
     let f = open(path)
-    defer f.close()
+    defer f.close()                  // always runs before the function returns
     return f.readAll()
+}
+
+fn process() {
+    defer {                          // block form
+        log.info("done")
+        cleanup()
+    }
+    do_work()
 }
 ```
 
-`defer` runs at function exit in reverse declaration order. It is function-scoped, not block-scoped.
+**Semantics**:
+- Runs at the **end of the function scope** (not the block scope, unlike Swift).
+- **LIFO**: multiple `defer` statements run in reverse declaration order.
+- **Always executes**: runs even if the function exits via an exception (similar to `finally`).
+- Difference from `finally`: `defer` is bound to the function scope, `finally` is bound to a `try` block.
+- An exception in a `defer` body **replaces** any in-flight exception (Go-style semantics).
 
-### 4.10 `yield`
+### 4.10 Built-in Print Functions
+
+`print` / `dump` are **built-in global functions** (not keywords; see §13.1), listed here for convenience:
 
 ```xray
-yield
+print("hello")                 // auto-appends a newline
+print("a:", a, "b:", b)        // multiple arguments separated by spaces
+dump(some_obj)                 // debug output, with type info and structure
 ```
 
-`yield` explicitly gives the scheduler a safepoint. It does not yield a value.
+**Behavior**:
+- Accepts any type and any number of arguments (variadic); each argument is automatically converted via its `toString()` or built-in formatter.
+- Output goes to stdout; not part of the exception mechanism.
+- Multiple arguments are separated by single spaces.
+- `print` appends a newline by default (different from C/Python; consistent with regression tests).
+- `dump` is for debugging; output includes type tags and internal structure.
 <!-- /xr-spec:en -->

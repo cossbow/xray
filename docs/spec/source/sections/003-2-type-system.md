@@ -427,100 +427,416 @@ Reflect.getAllTypes()       // 所有已注册类型
 
 ## 2. Type System
 
+> Source of truth: `src/runtime/value/xtype.h` (`XrType` definition), `src/runtime/value/xtype.c`, `src/frontend/parser/xparse_type.c` (syntax), `src/frontend/analyzer/xtype_ref_resolve.c` (resolution), `stdlib/prelude/prelude_types.def` (built-in type table).
+
 ### 2.1 Overview
 
-Xray is statically typed. Local variables usually rely on inference, while function parameters, public APIs, fields, and complex values often use explicit annotations.
+Xray is statically typed; every expression has a determined type at compile time. Core features of the type system:
 
-There is no source-level `any` type. When this document says “value” in an API signature, it means an arbitrary runtime value accepted by an intrinsic path, not a type you can write in source.
+1. **Type inference**: variable declarations rarely require type annotations; the analyzer infers from the initializer / context.
+2. **Nullable separation**: `T` is never `null`; `T?` is sugar for `T | null`.
+3. **Union types**: `A | B | ...` (up to 6 members).
+4. **Reified generics**: generic type parameters are reflectable at runtime.
+5. **Structural Json + Nominal class**: Json objects are field-structure compatible (duck typing); classes are nominally compatible.
+6. **Runtime reflection**: `typeof` / `Reflect.*` APIs.
 
-### 2.2 Primitive Types
+### 2.2 Type Categories
 
-| Type | Description |
+| Category | Examples |
 |--|--|
-| `int` | integer value |
-| `float` | floating-point value |
-| `bool` | boolean |
-| `string` | UTF-8 string |
-| `null` | singleton null value |
-| `()` | unit type/value |
+| Primitive | `int`, `float`, `bool`, `string`, `()` (Unit, no return value) |
+| Sized integers | `int8`, `int16`, `int32`, `int64`, `uint8`..`uint64` |
+| Sized floats | `float32`, `float64` |
+| Containers | `Array<T>`, `Map<K,V>`, `Set<T>`, `Channel<T>`, `Bytes` (equivalent to `Array<uint8>`) |
+| Special | `Json`, `BigInt`, `Range`, `DateTime`, `Regex`, `StringBuilder`, `Logger`, `NetConn`, `NetListener` |
+| Error-handling prelude | `Exception`, `Result<T, E>` (see §8) |
+| Weak containers | `WeakMap`, `WeakSet` |
+| Nullable | `T?` |
+| Union | `A \| B \| ...` |
+| Tuple | `(T1, T2, ...)` |
+| Function | `fn(T1, T2) -> R` |
+| Class / Struct / Interface | user-defined (nominal) |
+| Enum | user-defined (incl. ADT enum, see §5.6) |
+| Type alias | `type Name = SomeType` |
 
-Width-specific numeric type names are recognized, but the exact lowering is implementation-defined for current releases.
+### 2.3 Primitive Types
 
-### 2.3 Nullable Types
+#### 2.3.1 Integer Types
+
+| Type | Range | Alias |
+|--|--|--|
+| `int8` | `[-128, 127]` | — |
+| `int16` | `[-32768, 32767]` | — |
+| `int32` | `[-2³¹, 2³¹-1]` | — |
+| `int64` | `[-2⁶³, 2⁶³-1]` | `int` (default integer type) |
+| `uint8`..`uint64` | unsigned counterparts | — |
+
+- Literals default to `int`; the type may be narrowed by context (e.g., assigned to an `int32` variable).
+- Arithmetic: two's-complement wrap-around semantics (no debug/release distinction).
+
+#### 2.3.2 Floating-Point Types
+
+| Type | Standard |
+|--|--|
+| `float32` | IEEE-754 single precision |
+| `float64` | IEEE-754 double precision; alias of `float` |
+
+Literals default to `float`.
+
+#### 2.3.3 `bool`
+
+`true` / `false`, a standalone type. **No implicit conversion** to/from numeric types (cannot write `let x: int = true` or `let b: bool = 1`).
+
+**Truthy / falsy context** (applies only at control-flow positions such as `if` / `while` / `?:` / `??` / `&&` / `||`; **does not** change a variable's type):
+
+| Value | Treated as |
+|---|---|
+| `false`, `null`, `0`, `0.0`, `""`, `Bytes(0)`, empty array / empty Map | **falsy** |
+| Everything else (including `0.0001`, non-empty strings/collections, object references) | **truthy** |
 
 ```xray
-let s: string? = null
-let n: int? = 42
+let x: int? = maybe_int()
+if (x) {                  // truthy context: enters when x is neither null nor 0
+    print(x + 1)          // x is narrowed to int in this branch
+}
+
+let s: string = ""
+if (s) { ... } else { ... }    // falsy: enters else
+
+let m: Map<string, int> = #{}
+if (m) { ... }                  // falsy: empty Map
+
+let a: int? = null
+let b = a ?? 0                  // null coalescing: b = 0
 ```
 
-`T?` means `T | null`. Nullable values can be checked against `null`, accessed with optional chaining, or force-unwrapped with `!`.
+**Note**: explicit comparisons such as `x is T` and `x != null` are preferred; truthy/falsy is mainly for concise "existence" checks (such as `if (user)`).
 
-### 2.4 Union Types
+#### 2.3.4 `string`
+
+Immutable UTF-8 strings. Supports `length`, indexing, slicing, and a rich method set (see §14.2).
+
+Internally uses ARC + string interning optimizations.
+
+#### 2.3.5 Unit `()` (no return value)
+
+Xray uses the **0-tuple `()`** to represent "no return value" (the Unit type):
 
 ```xray
-let id: int | string = 42
-id = "abc"
+fn log(msg: string) -> () { print(msg) }   // explicit Unit return
+fn ping() { print("pong") }                  // omitted return type = ()
+let r: () = log("hi")                        // allowed; r is a Unit value
 ```
 
-Union types are written with `|`. Type narrowing is performed in supported control-flow and `is` checks.
+- A function omitting its return type is equivalent to `-> ()`.
+- `void` is not a type name: `fn f() -> void` is rejected (`E0804`); use `-> ()` or omit the return type to indicate no return value.
 
-### 2.5 Function Types
+### 2.4 Composite Types
+
+#### 2.4.1 `Array<T>`
+
+Ordered mutable array. See §14.1.
 
 ```xray
-type Mapper = (int) -> int
-let pred: (string) -> bool
+let a: Array<int> = [1, 2, 3]
+let b = [1, 2, 3]                // inferred as Array<int>
+let c: Array<string> = []         // explicit empty array
 ```
 
-Function types use `->`. Parameter names are not part of a function type.
+The `T` in `Array<T>` must be determinable at compile time. An empty `[]` without a type annotation is a compile error: `Empty array '[]' requires a type annotation`.
 
-### 2.6 Tuple Types
+#### 2.4.2 `Map<K, V>`
+
+Hash table that **preserves insertion order**. See §14.7.
+
+**Map literals** must use the `#{ ... }` prefix with `:` separators (consistent with Json; disambiguated by the `#` prefix):
 
 ```xray
-let p: (int, string) = (1, "x")
-print(p.0)
-print(p.1)
+let m: Map<string, int> = #{"a": 1, "b": 2}
+let m2 = #{"a": 1, "b": 2}
+let empty = #{}                                     // empty Map
+
+m["c"] = 3                                          // insert / update
+let v = m["a"]                                      // lookup; returns null if absent
 ```
 
-Tuples are fixed-arity product values. Tuple fields can be accessed by numeric member names.
+| Literal form | Type | Purpose |
+|---|---|---|
+| `{ key: value }` (no prefix) | `Json` / `Object` (structural) | see §2.4.6 |
+| `#{ "k": v }` (`#` prefix + `:`) | `Map<K, V>` (hash table) | this section |
+| `#{}` | `Map<K, V>` (empty) | explicit empty Map |
+| `[]` | `Array<T>` | array |
+| `#[]` | `Set<T>` | set |
 
-### 2.7 Object and Json Types
+`K` must implement `Hashable` (see §14.14): typically `int`, `string`, `bool`, `enum`, or a custom class implementing `Hashable`.
 
-Object type aliases are sealed when used as annotations:
+#### 2.4.3 `Set<T>`
+
+Deduplicated collection. See §14.4.
+
+```xray
+let s: Set<int> = #[1, 2, 3]
+```
+
+#### 2.4.4 `Channel<T>`
+
+Inter-coroutine communication channel. **Must** be declared `const` (see §10.5).
+
+```xray
+const ch: Channel<int> = new Channel<int>(10)
+```
+
+#### 2.4.5 `Bytes`
+
+Typed byte buffer. Semantically equivalent to `Array<uint8>`, but stored as contiguous memory.
+
+```xray
+let buf = new Bytes(1024)
+let init = new Bytes([72, 101, 108, 108, 111])
+```
+
+#### 2.4.6 `Json` and Object Literals
+
+`Json` is xray's **dynamic structured data type** — it can hold any JSON-equivalent structure. See §14.10 and §2.10.
+
+The key difference between an **object literal** `{ field: value, ... }` and a Map literal:
+
+```xray
+// Object/Json literal: identifier or string key + colon ':'
+let data: Json = { name: "Alice", tags: ["a", "b"], age: 30 }
+let user = { name: "Bob", age: 25 }       // default type is Json
+data.name              // type: Json (field access returns Json)
+data["name"]           // equivalent
+
+// Field shorthand: when a field name matches a variable name
+let name = "Alice"
+let age = 30
+let user = { name, age }                  // equivalent to { name: name, age: age }
+
+// Map literal: `#{}` prefix + `:`
+let m = #{"k1": 1, "k2": 2}           // type: Map<string, int>
+```
+
+**Comparison**:
+
+| Form | Type | Notes |
+|---|---|---|
+| `{ name: "x", age: 1 }` | `Json` / `Object` | identifier or string key followed by `:` |
+| `{ x: y }` (`x` is field name, `y` is variable) | `Json` / `Object` | shorthand `{ x }` equivalent to `{ x: x }`; bare key only |
+| `#{"a": 1}` | `Map<K, V>` | `#` prefix disambiguates; separator `:` |
+| `Point{x: 1.0, y: 2.0}` | `Point` (struct) | type name + `{...}` literal |
+
+**Sealed object types**: once an object type is named via `type`, it becomes sealed — accessing or assigning an undeclared field is a compile error:
 
 ```xray
 type User = { name: string, age: int }
-let u: User = { name: "alice", age: 30 }
+
+let u: User = { name: "Alice", age: 30 }
+print(u.name)         // OK
+// u.extra = "x"      // compile error: sealed type User has no field 'extra'
+
+// Without a type annotation, the literal is dynamic Json
+let u2 = { name: "Alice", age: 30 }      // Json (dynamically extensible)
+u2.extra = "x"        // OK (Json is dynamic)
 ```
 
-Access to undeclared fields on a sealed object is rejected. Unannotated object literals generally produce dynamic `Json`-style values.
+#### 2.4.7 `BigInt`
 
-`Json` is the dynamic structured data type for JSON-like values.
+Arbitrary-precision integer. See §14.8.
 
-### 2.8 Nominal Types
+#### 2.4.8 `Range`
 
-`class`, `struct`, `interface`, and `enum` declarations create nominal types. Classes are reference-oriented. Structs are value-oriented declarations sharing class-like member syntax. Interfaces define contracts. Enums support both backed simple enums and ADT payload variants.
+Produced by the `..` operator. See §3.12.
 
-### 2.9 Built-in Container Types
+#### 2.4.9 `DateTime` / `Regex` / `StringBuilder`
 
-| Type | Meaning |
-|--|--|
-| `Array<T>` | ordered mutable sequence |
-| `Map<K, V>` | insertion-ordered key/value table |
-| `Set<T>` | unique-value collection |
-| `Channel<T>` | typed coroutine channel |
-| `Range` | range created by `a..b` |
-| `Bytes` | byte-buffer type |
-| `StringBuilder` | mutable string builder |
-| `Regex` | compiled regex value |
-| `DateTime` | native date/time value |
+See §14 for details.
 
-### 2.10 Assignability
+#### 2.4.10 `WeakMap` / `WeakSet`
 
-Values are assignable when their static type is equal to or safely compatible with the target type. Nullable assignment requires a nullable target. Union assignment requires the source to be assignable to at least one union arm.
+Keys of `WeakMap` and elements of `WeakSet` must be heap objects; weak references do not prevent GC reclamation. Weak collections do not provide long-lived traversal callbacks that would retain elements.
 
-Numeric implicit conversion is intentionally limited. Use explicit conversion functions such as `int(x)`, `float(x)`, and `string(x)` when needed.
+### 2.5 Nullable Types
 
-### 2.11 Truthiness
+`T?` is sugar for `T | null`.
 
-Control-flow conditions accept truthy/falsy values. Common falsy values are `false`, `null`, numeric zero, empty string, and empty containers. Static assignment to `bool` remains type-checked and does not mean arbitrary truthy values are implicitly bools.
+```xray
+let x: int? = null      // OK
+let y: int? = 42        // OK
+let z: int = null       // compile error: null is not int
+```
+
+#### Unwrapping
+
+```xray
+// 1. Null coalescing
+let v = x ?? 0
+
+// 2. Optional chaining
+let len = name?.length    // null if name is null
+
+// 3. Force unwrap
+let v: int = x!           // throws NullError at runtime if x is null
+
+// 4. `is` check
+if (x is int) {
+    // In this branch x is narrowed to int
+    print(x + 1)
+}
+```
+
+### 2.6 Union Types
+
+```xray
+let v: int | string = 42
+v = "hello"             // OK
+```
+
+Constraints:
+- Up to **6 members** (checked at compile time; over the limit → error).
+- Members must not be subtypes of each other (otherwise normalized).
+- Working with a union value requires `match` or `is`-based narrowing:
+
+```xray
+let v: int | string = ...
+match v {
+    is int    -> print("int: ${v}"),
+    is string -> print("str: ${v}"),
+}
+```
+
+**Special cases**:
+- `int | null` normalizes to `int?`.
+- When `T?` appears in a union: `int? | string` is effectively `int | string | null`, normalized to `(int | string)?`.
+
+### 2.7 Tuple Types
+
+Xray's tuples are **first-class** — they may appear as any value, be stored as fields, and nest.
+
+```xray
+// Literals
+let t = (1, 2, 3)                 // type inferred as (int, int, int)
+let h = (10, "hi", true)          // heterogeneous tuple
+let single = (99,)                // single-element tuple: note trailing comma
+
+// Type annotation
+let p: (int, string) = (7, "ok")
+
+// Field access: .N (N is a compile-time constant integer index)
+let first = t.0                   // 1
+let mid   = t.1                   // 2
+let nest  = ((1, 2), (3, 4))
+let a     = nest.0.0              // 1
+let b     = nest.1.1              // 4
+
+// Function return and destructuring
+fn divmod(a: int, b: int): (int, int) { return (a / b, a % b) }
+let (q, r) = divmod(17, 5)        // tuple destructure
+
+// Generic
+fn pair<A, B>(a: A, b: B): (A, B) { return (a, b) }
+let p2 = pair(1, "x")             // (int, string)
+```
+
+**Notes**:
+
+- A **single-element tuple** must use a trailing comma `(x,)` — `(x)` without a comma is a grouping parenthesis (a plain expression).
+- In field access `t.N`, N **must be an integer literal**; using a variable or string is the compile error `XR_ERR_ANALYZE_TUPLE_FIELD_NAME` / `_RANGE`.
+- Tuples are **immutable**: `t.0 = v` is a compile error. To modify, build a new tuple.
+
+### 2.8 Type Aliases
+
+```xray
+type Result = int | string
+type Mapper = (int) -> int
+type Point = { x: float, y: float }
+```
+
+Aliases are **purely syntactic** equivalences; they do not introduce new types.
+
+### 2.9 Type Inference
+
+See §7.4 for details. In summary:
+
+```xray
+let x = 1               // x: int
+let y = 1.5             // y: float
+let z = "hello"         // z: string
+let a = [1, 2, 3]       // a: Array<int>
+let m = #{"a": 1}    // m: Map<string, int>
+let p = { name: "A" }   // p: { name: string } — structured object type
+let f = (x: int) -> x   // f: (int) -> int — arrow parameters require annotation
+```
+
+### 2.10 Type Compatibility and Conversion
+
+#### 2.10.1 Implicit Conversion
+
+| From | To | Allowed |
+|--|--|--|
+| `int` | `float` | ✅ |
+| `int8` | `int` (= `int64`) | ✅ |
+| `T` | `T?` | ✅ |
+| `T` | `Json` (if T is Json-compatible) | ✅ |
+| `null` | `T?` | ✅ |
+| Subtype | Supertype (class) | ✅ |
+| Subset object type | Superset object type | ❌ (structural compatibility goes superset → subset) |
+
+> **Structural compatibility direction** (duck typing): a type with more fields is assignable to a type with fewer fields.
+> ```xray
+> type User = { name: string }
+> let full = { name: "A", age: 18 }
+> let u: User = full       // OK: full is a superset of User
+> ```
+
+#### 2.10.2 Explicit `as`
+
+```xray
+let n = x as int        // throws TypeError on failure
+let n = x as int?       // returns null on failure (safe cast)
+```
+
+Applies to:
+- Between numeric types (including `Json → int`, checked at runtime).
+- `Json → User` (structural narrowing).
+- Parent → child (downcast).
+
+#### 2.10.3 `is` Check
+
+```xray
+if (v is User) {
+    // In this branch the compiler narrows v's type to User
+}
+```
+
+Acts only as a type guard; does not change the value.
+
+### 2.11 typeof / typename / Type Enum
+
+```xray
+typeof(value)     // returns a Type enum value (an int representation)
+typename(value)   // returns the type name as a string
+```
+
+`Type` enum members:
+
+`Type.int`, `Type.float`, `Type.string`, `Type.bool`, `Type.null`,
+`Type.Array`, `Type.Map`, `Type.Set`, `Type.Channel`, `Type.Json`,
+`Type.function`, `Type.class`, `Type.struct`, `Type.enum`, `Type.module`, `Type.bigint`, ...
+
+Full list: see `stdlib/types/enum.xr` / `src/runtime/value/xtype.h`.
+
+### 2.12 Runtime Reflection
+
+The `Reflect` module (built in):
+
+```xray
+Reflect.getType(obj)        // get type info (Json)
+Reflect.typeOf(obj)         // get the type name (string)
+Reflect.isInstance(obj, cls)// whether obj is an instance of cls
+Reflect.fieldCount(obj)     // number of fields
+Reflect.getAllTypes()       // all registered types
+```
+
+See §13 and §14 for more.
 <!-- /xr-spec:en -->
