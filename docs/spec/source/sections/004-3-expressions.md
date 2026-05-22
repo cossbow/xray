@@ -594,164 +594,583 @@ yield                       // 让出执行权
 
 ## 3. Expressions
 
-### 3.1 Precedence
+> Source of truth: `src/frontend/parser/xparse_expr.c`, AST node types in `src/frontend/parser/xast_types.h` such as `AST_BINARY_*` / `AST_UNARY_*` / `AST_TERNARY` / `AST_*`.
 
-From low to high:
+### 3.1 Precedence and Associativity
 
-1. Assignment and compound assignment.
-2. Ternary `? :`.
-3. Nullish coalescing and logical operators.
-4. Bitwise operators.
-5. Equality and comparison.
-6. Type checks/casts (`is`, `as`).
-7. Shifts.
-8. Addition/subtraction.
-9. Multiplication/division/modulo.
-10. Unary operators.
-11. Range.
-12. Calls, member access, indexing, slicing, optional chaining, force unwrap.
+Full precedence table (highest → lowest; operators at the same level share associativity):
 
-### 3.2 Literals
+| Level | Operators | Assoc. | Description |
+|--|--|--|--|
+| 17 | `(...)` `[...]` `.x` `?.x` `f()` `e!` | left | postfix: grouping, index, member, optional chain, call, force unwrap |
+| 16 | prefix `-` `+` `!` `~` `new` `move` `await` `go` | right | unary prefix + coroutine operators (`++` / `--` are postfix only) |
+| 15 | `as` `is` | left | type cast / check (`as T?` is the safe form via a nullable target type, not a separate `as?` operator) |
+| 14 | `*` `/` `%` | left | multiplication / division / modulo |
+| 13 | `+` `-` | left | addition / subtraction |
+| 12 | `<<` `>>` | left | shifts |
+| 11 | `<` `<=` `>` `>=` | left | relational |
+| 10 | `==` `!=` `===` `!==` | left | equality |
+| 9 | `&` | left | bitwise AND |
+| 8 | `^` | left | bitwise XOR |
+| 7 | `\|` | left | bitwise OR (also union types) |
+| 6 | `&&` | left | logical AND (short-circuit) |
+| 5 | `\|\|` | left | logical OR (short-circuit) |
+| 4 | `??` | left | null coalescing |
+| 3 | `..` | left | range |
+| 2 | `? :` | right | ternary |
+| 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | right | assignment and compound assignment |
+| 0 | `,` (only in `match` multi-value arms, argument lists, etc.) | — | not a real operator |
+
+Implementation: Pratt-parser style in `src/frontend/parser/xparse_expr.c`.
+
+### 3.2 Unary Expressions
+
+```ebnf
+UnaryExpr ::= ('-' | '+' | '!' | '~') UnaryExpr
+            | 'new' Identifier TypeArgs? '(' ArgList? ')'
+            | 'move' UnaryExpr
+            | 'await' ('all' | 'any')? UnaryExpr
+            | 'go' (Block | PostfixExpr)
+            | 'try?' UnaryExpr
+            | 'try!' UnaryExpr
+            | PostfixExpr
+```
+
+| Operator | Applicable types | Result type | Notes |
+|--|--|--|--|
+| `-x` | numeric | same | negation; preserves float NaN |
+| `+x` | numeric | same | identity, almost never useful |
+| `!x` | `bool` | `bool` | logical not; **rejects non-bool** (unlike JS) |
+| `~x` | integer | same | bitwise complement |
+| `x++` `x--` | integer | same | postfix inc/dec; returns the **updated** value (unlike C/Java; essentially the result of the assignment `x = x + 1`) |
+
+**Inc/dec semantics**:
+- Xray provides **only postfix** `x++` / `x--`; prefix `++x` / `--x` is a compile error ("prefix ++/-- not supported, use postfix form").
+- Equivalent to the assignment `x = x + 1` / `x = x - 1`; the expression value is the new value after assignment.
+- Cannot be inlined within a binary expression (`a + x++`, `f(x++)`, `x++ + 1` etc.); the parser reports "++/-- must be standalone statement". `let y = x++` is allowed (assignment on the immediate left), and `y` receives the post-update value.
+- Applies only to lvalues (variables, fields, indexes).
+- Floating-point values **do not support** `++`/`--` (compile error).
+
+### 3.3 Binary Expressions
+
+```ebnf
+BinaryExpr ::= UnaryExpr (BinOp UnaryExpr)*
+BinOp ::= '+' | '-' | '*' | '/' | '%'
+       | '&' | '|' | '^' | '<<' | '>>'
+       | '<' | '<=' | '>' | '>='
+       | '==' | '!=' | '===' | '!=='
+       | '&&' | '||'
+       | '??'
+```
+
+#### 3.3.1 Arithmetic Operators
+
+| Operator | int×int | float×float | int×float | string | other |
+|--|--|--|--|--|--|
+| `+` | int | float | float (int→float promotion) | string concatenation | ❌ |
+| `-` | int | float | float | ❌ | ❌ |
+| `*` | int | float | float | ❌ | ❌ |
+| `/` | int (truncating) | float | float | ❌ | ❌ |
+| `%` | int | float (IEEE remainder) | float | ❌ | ❌ |
+
+**Special semantics**:
+- `int / 0` → throws `XR_ERR_DIV_BY_ZERO` (E0420) at runtime.
+- `int % 0` → throws `XR_ERR_MOD_BY_ZERO` (E0421) at runtime.
+- `float / 0.0` → `+inf` / `-inf` / `NaN` (IEEE-754 semantics; **does not** throw).
+- Integer overflow: see §2.3.1.
+- `string + string` is O(n) concatenation; for heavy concatenation use `StringBuilder`.
+
+#### 3.3.2 Bitwise Operators
+
+`&` `|` `^` `~` `<<` `>>`
+
+- Apply only to integer types.
+- Shift counts are taken modulo 64 (unlike C: always defined in xray).
+- `>>` is an **arithmetic right shift** (preserves the sign bit). For unsigned shifts, use the corresponding `uintN`.
+- `bool` does not participate in bitwise operations (use `&&` `||`).
+
+#### 3.3.3 Comparison Operators
+
+| Operator | Semantics |
+|--|--|
+| `==` | value equality. `int` and `float` are comparable (with int→float implicit promotion). Strings compare by content. class/struct uses `==` overload or default identity. |
+| `!=` | inverse of `==` |
+| `===` | **strict** equality: both type and value must match; no implicit conversion. |
+| `!==` | inverse of `===` |
+| `<` `<=` `>` `>=` | supported by numbers and strings; other types are unsupported by default (enable via `operator<` overload). |
+
+**Difference vs. JS**: xray's `==` **does not** do string↔number conversion; only the numeric int↔float promotion.
+
+#### 3.3.4 Logical Operators
+
+`&&` `||`:
+
+- Both operands **must** be `bool` (checked at compile time).
+- Short-circuit evaluation: `false && X` does not evaluate `X`; `true || X` does not evaluate `X`.
+- Result type is `bool` (unlike JS, which returns one of the operands).
+
+#### 3.3.5 Null Coalescing `??`
+
+```xray
+let v = nullable_expr ?? default_value
+```
+
+- Returns `default_value` when `nullable_expr` is `null`; otherwise returns `nullable_expr` itself.
+- **Short-circuit**: `default_value` is evaluated only when the left side is null.
+- Type inference: if `nullable_expr: T?` and `default_value: T`, the result type is `T` (non-null).
+- Applies only to nullable types; using `??` on a non-null `T` is a compile warning/error.
+
+### 3.4 Assignment and Compound Assignment
+
+```ebnf
+AssignExpr ::= LValue AssignOp Expression
+LValue ::= Identifier | MemberAccess | IndexAccess
+AssignOp ::= '=' | '+=' | '-=' | '*=' | '/=' | '%='
+           | '&=' | '|=' | '^=' | '<<=' | '>>='
+```
+
+**Semantics**:
+- Assignment is an **expression**; its result is the assigned value (chainable: `a = b = 0`).
+- `x op= y` is equivalent to `x = x op y`, but `x` is evaluated only once (important: `obj.f += 1` does not call `f`'s getter twice).
+- Cannot assign to a `const` (compile error `E0303`).
+- Cannot assign to `shared const` (same as above).
+
+**Special cases**:
+- A function parameter with the `in T` modifier is read-only; assignment is a compile error.
+- Array/Map field assignment: `a[i] = v` calls `operator[]=` or the built-in setter.
+
+### 3.5 Ternary `? :`
+
+```ebnf
+TernaryExpr ::= LogicOrExpr ('?' Expression ':' Expression)?
+```
+
+```xray
+let max = a > b ? a : b
+```
+
+- **Right-associative**: `a ? b : c ? d : e` = `a ? b : (c ? d : e)`.
+- The condition must be `bool`.
+- The two branches share a unified type (taken as the common supertype or a union).
+
+### 3.6 Null Coalescing `??` and Optional Chaining `?.`
+
+See §3.3.5 (`??`) and below (`?.`).
+
+#### Optional chaining `?.`
+
+```ebnf
+OptionalChain ::= Primary ('?.' (Identifier | '[' Expr ']'))+
+```
+
+```xray
+let len = name?.length          // returns null when name is null
+let item = arr?.[0]             // optional index
+```
+
+**Semantics**:
+- If the LHS of `?.` is `null`, the entire expression short-circuits to `null`.
+- **Propagation**: in `a?.b.c.d`, if `a` is null the whole chain returns null; intermediate `.` operations are not re-checked.
+- Result type: the original type plus `?` (already-nullable types remain unchanged).
+- Currently `?.` supports property and index access; optional function call `func?.()` is not part of the current grammar.
+
+### 3.7 Force Unwrap `!` / `try?` / `try!` / `catch!`
+
+> Full error-handling semantics are in §8. This section only lists the expression syntax and brief semantics.
+
+#### Force unwrap `expr!`
+
+```xray
+let v: int = nullable_int!      // throws NullThrowError (E0410) at runtime when null
+```
+
+Legal only when `expr` is known to be a nullable type (`T?`) at compile time; using `!` on a non-null `T` is a compile error.
+
+#### `try?` expression — collapse failure to null
+
+```ebnf
+TryOptional ::= 'try?' Expression
+```
+
+`try? e` collapses any failure to `null`, discarding the cause:
+
+| Static type of `e` | Type of `try? e` | Behavior |
+|--|--|--|
+| `Result<T, E>` | `T?` | `Err` → `null`; `Ok(v)` → `v` |
+| `T` (ordinary type, call may throw) | `T?` | thrown → `null`; otherwise → `v` |
+| `T?` | `T?` | passes through |
+
+```xray
+let n: int? = try? parseInt(input)         // Result.Err → null
+let v: Json? = try? http.get(url).json()   // thrown → null
+```
+
+#### `try!` expression — early return or cross-track promotion
+
+```ebnf
+TryForce ::= 'try!' Expression
+```
+
+The static type of the expression following `try!` **must** be `Result<T, E>` or `T?` (other types are a compile error `E0821`). Behavior is double-dispatched by expression type + the current function's return type:
+
+| `e` type | Current function return | Failure behavior | Success value |
+|--|--|--|--|
+| `Result<T, E>` | `Result<_, E>` | early return `return Result.Err(e)` | `v` |
+| `Result<T, E>` | other | `throw e` (requires `E` to be `Exception`-derived) | `v` |
+| `T?` | `_?` | early return `return null` | `v` |
+| `T?` | other | `throw new NullThrowError(...)` | `v` |
+
+```xray
+fn pipeline(s: string) -> Result<int, ParseError> {
+    let n = try! parseInt(s)      // Err early-returns Err
+    return Result.Ok(n + 1)
+}
+```
+
+Full details in §8.3.1. **`try!` is not a mandatory ceremony for exception-throwing calls** — xray does not require `try!` before every call that might throw.
+
+#### `catch!` block expression — condense an exception block into a Result
+
+```ebnf
+CatchBlock ::= 'catch!' Block
+```
+
+`catch! { ... }` wraps any exceptions that might escape the block into a `Result<T, Exception>`:
+
+```xray
+let r: Result<int, Exception> = catch! {
+    let x = riskyOp()
+    let y = another(x)
+    return y + 1                   // a return inside is a "return from the catch! block"
+}
+```
+
+- A `return v` inside the block returns from the `catch!` block (does not affect the outer function).
+- The block's last expression is taken as the `Ok(v)` payload.
+- **Any exception** escaping the block is wrapped as `Err(e)`; `e` is statically typed `Exception`.
+- Type filtering is not supported — when needed, use a handwritten `try/catch`.
+
+Full details in §8.3.3.
+
+### 3.8 `as` / `is`
+
+#### `is` runtime type check
+
+```ebnf
+IsExpr ::= UnaryExpr 'is' Type
+```
+
+```xray
+if (v is User) {
+    // v is narrowed to User in this branch
+    print(v.name)
+}
+```
+
+- Result type: `bool`.
+- **Type guard**: the analyzer narrows the static type of `v` inside the branch.
+- Applies to union, nullable, class hierarchies, and `Json` structural matching.
+
+#### `as` type cast
+
+```ebnf
+AsExpr ::= UnaryExpr 'as' Type
+        |  UnaryExpr 'as' Type '?'
+```
+
+```xray
+let n = v as int           // throws TypeError on failure
+let n = v as int?          // returns null on failure (the "as nullable" safe form)
+```
+
+| Form | Failure behavior | Use case |
+|--|--|--|
+| `expr as T` | throws `XR_ERR_TYPE_MISMATCH` (E0404) | a cast that must succeed |
+| `expr as T?` | returns `null` | a cast that may or may not succeed |
+
+**Supported conversions**:
+- Between numeric types (`int → float` lossless, `float → int` truncating).
+- `Json → T` (runtime structural check against `T`).
+- Parent → child (runtime `instanceof`).
+- Union member → concrete member.
+
+### 3.9 Range `..` and Spread `...`
+
+#### Range `a..b`
+
+```ebnf
+RangeExpr ::= AddExpr ('..' AddExpr)?
+```
+
+```xray
+0..10                  // 0..10, left-closed right-open (includes 0, excludes 10)
+let r = 1..100
+for (i in 0..n) { ... }
+```
+
+- Type: `Range` (int ranges only).
+- Half-open interval `[a, b)`: `a` is included, `b` is not. `for-in`, `Range.includes`, `Range.length`, `Range.toArray()`, and the `a..b` pattern in `match` all share the same semantics.
+- Primary uses: `for-in` loops, range checks in pattern matching.
+- The closed-interval syntax (`a..=b`) is not currently provided; to include `b`, write `a..(b+1)`.
+
+#### Spread `...`
+
+Allowed in the following positions only:
+- **Function rest parameter declaration**: `fn f(...args: int)`
+- **Function call spread**: `f(...args)`; the spread source must be a tuple whose arity is statically known.
+- **Tuple literal spread**: `(head, ...tail)`; the spread source must be a tuple whose arity is statically known.
+
+### 3.10 Literal Construction
+
+#### Array `[...]`
+
+```ebnf
+ArrayLit ::= '[' (Expr (',' Expr)* ','?)? ']'
+```
 
 ```xray
 let a = [1, 2, 3]
+let empty: Array<int> = []
+let mixed = [1, "hello"]    // type Array<int | string>
+```
+
+#### Map `#{k: v, ...}` and `#{}`
+
+```ebnf
+MapLit   ::= '#{' (MapEntry (',' MapEntry)* ','?)? '}'
+MapEntry ::= Expression ':' Expression
+EmptyMap ::= '#{' '}'    // note: '#{' is a single token
+```
+
+```xray
 let m = #{"a": 1, "b": 2}
+let empty = #{}                           // empty Map
+```
+
+**Key distinction**: `{}` is always a **Json / Object**; `#{}` is always a **Map**. Both use `:` between key and value; the `#` prefix is the disambiguator.
+
+#### Set `#[...]`
+
+```ebnf
+SetLit ::= '#[' (Expr (',' Expr)* ','?)? ']'
+```
+
+```xray
 let s = #[1, 2, 3]
-let obj = { name: "alice", age: 30 }
-let tup = (1, "x")
+let empty = #[]
 ```
 
-Array literals use `[ ... ]`. Map literals use `#{ ... }` with `:` key/value separators. Set literals use `#[ ... ]`. Object/Json literals use `{ ... }`.
+#### Object (structured object) `{ field: value, ... }`
 
-### 3.3 Variables and Assignment
+```ebnf
+ObjectLit  ::= '{' ObjectField (',' ObjectField)* ','? '}'
+ObjectField ::= Identifier ':' Expr
+              | Identifier            // shorthand: `{ x }` ≡ `{ x: x }`
+```
 
 ```xray
-let x = 1
-x = 2
-x += 3
+let p = { name: "Alice", age: 30 }
+let users = "Bob"
+let obj = { users }              // shorthand
 ```
 
-Assignment requires an assignable lvalue. `const` bindings and readonly fields cannot be assigned after initialization.
+- Defaults to an **extensible** structured object type (see §2.4.6 / §2.10 Json behavior).
+- Fix the structure with a `type` alias: `let u: User = {...}` (compile-time field check, sealed).
 
-### 3.4 Indexing and Slicing
+#### Bytes `new Bytes(...)`
+
+See §2.4.5 and §14.5.
+
+#### Channel `new Channel<T>(buf?)`
 
 ```xray
-arr[0]
-arr[1] = 10
-arr[start:end]
-arr[:end]
-arr[start:]
-arr[:]
+const ch: Channel<int> = new Channel<int>(10)
 ```
 
-The parser distinguishes indexing from slicing by the presence of `:` inside brackets.
+See §10.5.
 
-### 3.5 Member Access
+### 3.11 Calls / Member Access / Indexing / Slicing
+
+#### Function call
+
+```ebnf
+CallExpr ::= Primary '(' ArgList? ')'
+ArgList ::= Expr (',' Expr)* ','?
+```
+
+- Arguments are passed positionally; named arguments are not supported.
+- A rest parameter collects extra arguments into an array.
+- Argument-count mismatch → compile error `E0307` / `E0450`.
+
+#### Member access
+
+```ebnf
+MemberAccess ::= Primary '.' Identifier
+```
 
 ```xray
 obj.field
-obj.method(arg)
-tuple.0
-json.class
+obj.method(args)
+ClassName.staticMethod()
+EnumName.MemberName
 ```
 
-After `.`, identifiers, keywords, and integer literals are accepted as member names. Integer member names are used for tuple fields.
+- Field access: compile-time check that the type has the field.
+- Method call: resolved to invoke (with IC cache optimization).
+- Module member: `module.export_name`.
+- Enum member: `Color.Red`.
 
-### 3.6 Calls
+#### Index access
 
-```xray
-f()
-f(1, 2)
-obj.method(x)
+```ebnf
+IndexAccess ::= Primary '[' Expr ']'
 ```
 
-Calls evaluate the callee and arguments, then dispatch according to function, closure, native function, class constructor, static method, or instance method semantics.
+```xray
+arr[0]
+arr[0] = 10
+map["key"]
+str[i]                  // returns a single-character string
+```
 
-### 3.7 Closures
+- `Array` indexing: `int`; out-of-bounds throws `E0430`.
+- `Map` indexing: key type; missing key → `E0431`.
+- `string` indexing: returns a length-1 string (**not** a char/int).
+- User classes: via `operator[]` overload.
+
+#### Slice
+
+```ebnf
+Slice ::= Primary '[' Expr? ':' Expr? ']'
+```
 
 ```xray
-let inc = (x: int) -> x + 1
-let add = (a: int, b: int) -> {
-    return a + b
+arr[1:4]                // elements [1, 4)
+arr[:3]                 // first 3
+arr[2:]                 // from index 2 to the end
+arr[:]                  // full slice (shallow copy)
+str[0:5]                // string slice
+```
+
+- Half-open interval `[start, end)`.
+- `string` slicing supports negative indexes (counting from the end); for `Array`, a negative `start` is clamped to `0` and a negative `end` is treated as the array length.
+- Slicing returns a new object; the original array is not modified.
+
+### 3.12 Anonymous Functions and Lambdas
+
+Xray has three anonymous-function forms, all compiled to the same `AST_FUNCTION_EXPR` node with fully equivalent semantics; they differ only in conciseness and applicable position.
+
+```ebnf
+AnonFunction ::= BareLambda | ArrowLambda | FnExpression
+BareLambda   ::= Identifier '->' (Expression | Block)
+ArrowLambda  ::= '(' ArrowParams? ')' '->' (Expression | Block)
+ArrowParams  ::= ArrowParam (',' ArrowParam)*
+ArrowParam   ::= Identifier (':' Type)?      // type optional, inferred from context
+FnExpression ::= 'fn' GenericParams? '(' Params ')' ('->' Type)? Block
+```
+
+```xray
+// ── Bare lambda: most concise, restricted to call-argument position ──
+arr.map(x -> x * 2)
+arr.filter(x -> x % 2 == 0)
+
+// ── Arrow lambda: any position, supports multi-param and type annotation ──
+let sum = arr.reduce((acc, x) -> acc + x, 0)    // no type
+let double = (x: int) -> x * 2                   // typed
+let add = (a: int, b: int) -> a + b              // multi-param
+
+// ── fn expression: multi-statement body, return-type annotation, generics ──
+let inc = fn(x: int) -> int {
+    let y = x + 1
+    return y
+}
+let identity = fn<T>(x: T) -> T { return x }     // generic
+```
+
+**Choosing among the three**:
+
+| Form | Syntax | Suitable for |
+|------|------|----------|
+| Bare lambda | `x -> expr` | single-parameter callbacks, most concise |
+| Arrow lambda | `(x, y) -> expr` | multi-param, type annotation, or non-call positions |
+| fn expression | `fn(x: T) -> R { ... }` | multi-statement body, return-type annotation, generics |
+
+**Key rules**:
+- **Bare lambda** (`x -> expr`): restricted to **call-argument position**; the single parameter is unparenthesized. The parameter type is inferred from the callee signature or the container element type.
+- **Arrow lambda** (`(x) -> expr`, `(x, y) -> expr`): usable in any position. Parameter types may be omitted and inferred from context; inference failure raises `E0365`.
+- **fn expression** (`fn(x: T) { ... }`): usable in any position. Supports generic parameters `fn<T>(...)`, return-type annotation `-> T`, and a multi-statement body.
+- Single-expression form `-> expr` implicitly `return`s.
+- Block form `-> { ... }` or `{ ... }` uses an explicit `return`.
+- Capture rules: see §7.4 closure capture. **A `go` coroutine closure cannot capture `let` variables** — pass them explicitly via `shared const`, `move`, or parameters.
+
+### 3.13 `match` Expression
+
+```ebnf
+MatchExpr ::= 'match' Expr '{' MatchArm (',' MatchArm)* ','? '}'
+MatchArm ::= Pattern ('if' Expr)? '->' Expression
+```
+
+```xray
+let result = match x {
+    1 -> "one",
+    2, 3, 4 -> "few",                 // multi-value
+    10..20 -> "teen",                 // range
+    n if (n > 100) -> "big",          // guard
+    Color.Red -> "red",               // enum
+    is User -> "a user",              // type pattern
+    _ -> "default"                    // wildcard
 }
 ```
 
-Arrow closures cannot declare an explicit return type. Annotate the binding or use a named `fn` if an explicit return type is required.
+**Semantics**:
+- Matches top-down, taking the first successful arm.
+- All arm expressions must yield the same type (or a union).
+- **Exhaustiveness**: for enum scrutinees (ADT and simple enums), the compiler enforces exhaustiveness. Otherwise it is not enforced, and an unmatched value at runtime throws `Exception(E0442)`.
+- For pattern details see [§6](#6-patterns).
 
-### 3.8 Type Operators
+### 3.14 `new`
 
-```xray
-if (x is string) {
-    print(x)
-}
-let y = x as int?
+```ebnf
+NewExpr ::= 'new' Identifier TypeArgs? '(' ArgList? ')'
 ```
 
-`is` checks runtime type and can narrow static type. `as` performs a cast; nullable target types are used for safe failure paths.
-
-### 3.9 Nullable Operators
-
 ```xray
-user?.name
-value!
-left ?? fallback
-```
-
-Optional chaining returns `null` if the receiver is null. Force unwrap throws or fails if the operand is null. Nullish coalescing returns its right operand only when the left operand is null.
-
-### 3.10 `new`
-
-```xray
-let p = new Point(1, 2)
+let p = new Point(1.0, 2.0)
+let arr = new Array<int>()
 let ch = new Channel<int>(10)
+let m = new Map<string, int>()
 ```
 
-`new` constructs class, struct, and supported native/prelude values. Constructor dispatch follows nominal type semantics.
+**Used for**:
+- Class and struct instantiation.
+- Constructing built-in container types (`Array` / `Map` / `Set` / `Channel` / `Bytes` / `StringBuilder`, etc.).
 
-### 3.11 `move`
+**Relation to literals**:
+```xray
+let a = [1, 2, 3]              // equivalent to new Array<int>() + push
+let m = #{}                    // equivalent to new Map<...>()
+let p = Point{x: 1, y: 2}      // struct literal
+```
+
+### 3.15 String Interpolation
+
+See §1.6.5. In brief:
 
 ```xray
-ch.send(move payload)
+"Hello, ${name}! Age: ${user.age + 1}"
 ```
 
-`move` transfers ownership across boundaries, most importantly across channels and coroutine boundaries.
+- `${...}` accepts any expression (calls, object access, arithmetic).
+- Embedded string literals inside the interpolation require escaped quotes or a switch to single-quoted outer strings.
+- The expression's type must be convertible to a string (implement `toString()` or be a primitive).
 
-### 3.12 Range Expressions
+### 3.16 `yield` Statement
 
 ```xray
-let r = 1..10
-for (i in 1..10) { print(i) }
+yield                       // yield execution
 ```
 
-Ranges are half-open in normal iteration: `[start, end)`.
+**Current implementation**: only the value-less statement form is supported, letting the coroutine relinquish the CPU (analogous to Go's `runtime.Gosched()`).
 
-### 3.13 `match` Expressions
-
-```xray
-let label = match (x) {
-    0 -> "zero"
-    1..10 -> "small"
-    _ -> "other"
-}
-```
-
-The scrutinee must be parenthesized: `match (x)`. Arms use `->`. Guards use `if (condition)` after the pattern.
-
-### 3.14 Try Expressions
-
-```xray
-let maybe = try? mayThrow()
-let value = try! mayThrow()
-let result = catch! { mayThrow() }
-```
-
-`try?` converts exceptions to `null`. `try!` rethrows. `catch!` wraps success/error paths into a Result-style value.
-
-### 3.15 Throw Expressions
-
-```xray
-throw new Exception("error")
-```
-
-The operand must be statically typed as `Exception` or an `Exception` subclass.
+See §10.10.
 <!-- /xr-spec:en -->

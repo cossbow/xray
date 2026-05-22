@@ -343,61 +343,172 @@ xray 通过类型系统**编译期消除大部分数据竞争**：
 
 ## 10. Concurrency and Coroutines
 
-### 10.1 `go`
+> Source of truth: `src/runtime/coro/xcoro_*.c`, `src/runtime/sync/xchannel.c`, `src/runtime/sync/xscope.c`, `docs/rules/design-principles.md`.
 
-```xray
-let task = go compute()
-```
+xray's concurrency model is **goroutine-style coroutines + channels + strong static guarantees**. Design goal: writing `go { ... }` is as simple as writing an ordinary function call, while the **compiler guarantees no data race**.
 
-`go` starts a coroutine and returns a `Task<T>` handle.
+### 10.1 Coroutine model
 
-### 10.2 `await`
-
-```xray
-let r = await task
-let results = await all [t1, t2, t3]
-let first = await any [t1, t2, t3]
-let ok = await anySuccess [t1, t2, t3]
-```
-
-`await` propagates exceptions from the awaited task. `await all` fails when any task fails. `await anySuccess` skips failing tasks until one succeeds or all fail.
-
-### 10.3 `Task<T>`
-
-Task members:
-
-| Member | Meaning |
+| Dimension | Choice |
 |--|--|
-| `done` | task completed |
-| `cancelled` | task was cancelled |
-| `result` | completed result or null |
-| `error` | error message/value or null |
-| `cancel()` | request cooperative cancellation |
+| Scheduling model | M:N (user-space coroutines on multiple OS threads) |
+| Scheduling policy | Cooperative (GC safepoints) + work stealing |
+| Stack model | Segmented stacks (grow on demand) |
+| Creation cost | ~microsecond, KB-scale initial stack |
+| Context switch | User-space stack switch, no syscall |
 
-### 10.4 `Channel<T>`
+Coroutines are distributed across multiple worker threads by default; the runtime sets a Go-style `GOMAXPROCS` parallelism level based on the CPU core count.
+
+### 10.2 `go` — start a coroutine
+
+```ebnf
+GoExpr ::= 'go' (Block | CallExpr | LambdaExpr CallArgs?)
+```
+
+`go` is an **expression** returning a `Task<T>` handle. Three forms are valid:
+
+```xray
+// Form 1: call an existing function
+let t1 = go worker(0, channel)
+
+// Form 2: call a lambda literal (inline logic + captured arguments)
+let t2 = go fn(d: Json) -> int {
+    return d.value * 2
+}(payload)
+
+// Form 3: block form (implicitly wrapped as a zero-argument lambda)
+let t3 = go {
+    return compute()
+}
+```
+
+**`move` lives in argument position**: cross-coroutine ownership transfer goes through the argument prefix `move`, **not** through a `go` option:
+
+```xray
+shared let data = { value: 10 }
+let task = go fn(d: Json) -> int {
+    return d.value + 1
+}(move data)        // transfer data ownership to the coroutine; data is unusable afterwards
+```
+
+**Semantics**:
+- Every `go` expression returns a `Task<T>`, where `T` is the callee's return type; functions returning `()` correspond to `Task<null>`.
+- Coroutines are scheduled on idle worker threads (M:N).
+- Uncaught exceptions are stored in the `Task` and rethrown when `await` is called.
+- Plain locals (not `shared`, not `move`d) passed to `go` are **deep-copied automatically**; `shared const` is shared zero-copy; `shared let` must be `move`d.
+
+### 10.3 `await` — wait for a result
+
+```ebnf
+AwaitExpr ::= 'await' Expression
+           |  'await' 'all' Expression       // wait for all to complete
+           |  'await' 'any' Expression       // wait for any one to complete
+```
+
+```xray
+// single task
+let task = go fetch("https://example.com")
+let result = await task                    // yields the current coroutine until task completes
+
+// await all: wait for all, returns the result array (in input order)
+let t1 = go compute(2)
+let t2 = go compute(3)
+let t3 = go compute(4)
+let results: Array<int> = await all [t1, t2, t3]
+// also works on a variable directly, no brackets needed
+let tasks = [t1, t2, t3]
+let results2: Array<int> = await all tasks
+
+// await any: wait for the first to complete, return its result; the others keep running
+let first = await any [t1, t2, t3]
+
+// await anySuccess: skip failing tasks; wait for the first successful one
+let firstOk = await anySuccess [t1, t2, t3]
+```
+
+**Semantics**:
+
+- `await` only applies to `Task<T>`; other types are a compile error.
+- The current coroutine **yields** until the target completes (without blocking the OS thread).
+- Exception propagation:
+  - `await t` rethrows the exception thrown by `t`.
+  - `await all` throws if any task throws (the others are cancelled).
+  - `await any` throws only when **every** task fails; if any one completes, its result is returned.
+  - `await anySuccess` is similar to `await any` but **skips** throwing tasks, awaiting only the first successful one.
+- `all` / `any` / `anySuccess` are **contextual keywords** after `await`; they apply only in this position.
+
+### 10.4 `Task<T>` handle
+
+`go expr` returns `Task<T>`, where `T` is the callee's return type. Task handles support:
+
+| Method / property | Type | Description |
+|--|--|--|
+| `t.done` | `bool` (property) | Whether the task has completed (success, failure, or cancellation) |
+| `t.cancelled` | `bool` (property) | Whether the task was cancelled |
+| `t.result` | `Json` (property) | Task return value; `null` if incomplete or failed |
+| `t.error` | `string?` (property) | Task exception message; `null` if it has not failed |
+| `t.cancel()` | `() -> ()` | Request cooperative cancellation |
+
+```xray
+let t = go fetch(url)
+if (!t.done) { /* still running */ }
+let r = await t
+
+// read properties directly (no await required)
+print(t.done, t.cancelled, t.result, t.error)
+```
+
+**Cancellation semantics**: `cancel()` sets the cancellation flag; the coroutine throws a cancellation exception at the next safepoint (GC checkpoint, channel operation, `await`, `yield`). `await` on a cancelled task returns `null`; `t.cancelled` becomes `true`.
+
+### 10.5 Channel
+
+```ebnf
+ChannelType ::= 'Channel' '<' Type '>'
+ChannelNew  ::= 'new' 'Channel' ('<' Type '>')? '(' Expression ')'
+```
+
+Channels are usually declared as `shared const` (cross-coroutine lifetime, reference semantics):
+
+```xray
+shared const ch  = new Channel<int>(10)    // buffered, capacity = 10
+shared const ch0 = new Channel<int>(0)     // unbuffered (synchronous handshake)
+shared const cha = new Channel(3)          // element type inferred from the first send
+```
+
+**API** (note that all method names are **camelCase**):
+
+| Method | Signature | Behaviour |
+|--|--|--|
+| `send(v)` | `(T) -> ()` | Blocking send; waits for a consumer when full; throws if the channel is closed |
+| `recv()` | `() -> T?` | Blocking receive; waits for a producer when empty; returns `null` once the channel is closed and the buffer is drained |
+| `trySend(v)` | `(T) -> bool` | Non-blocking: `true` on success, `false` if full or closed |
+| `tryRecv()` | `() -> (T, bool)` | Non-blocking; returns `(value, ok)`; `ok=false` when empty or closed |
+| `sendTimeout(v, ms)` | `(T, int) -> bool` | Send with timeout; returns `false` on timeout |
+| `recvTimeout(ms)` | `(int) -> (T, bool)` | Receive with timeout; `ok=false` on timeout |
+| `close()` | `() -> ()` | Close the channel; idempotent |
+| `isClosed` | `bool` (property) | Whether the channel is closed |
 
 ```xray
 shared const ch = new Channel<int>(2)
 ch.send(10)
-let v = ch.recv()
-let ok = ch.trySend(20)
-let (value, got) = ch.tryRecv()
+let v = ch.recv()                       // 10
+
+let ok = ch.trySend(20)                 // true / false
+let (val, ok2) = ch.tryRecv()           // tuple destructure: value + ok flag
+if (ok2) { print(val) }
+
+ch.close()
 ```
 
-Channel methods:
+**send/recv with `move`**: when sending a large object, use `ch.send(move payload)` to transfer ownership and avoid copying; the receiver becomes the sole owner.
 
-| Method | Meaning |
-|--|--|
-| `send(v)` | blocking send; throws on closed channel |
-| `recv()` | blocking receive; returns buffered values, then null when closed and empty |
-| `trySend(v)` | non-blocking send |
-| `tryRecv()` | non-blocking receive returning `(value, ok)` |
-| `sendTimeout(v, ms)` | send with timeout |
-| `recvTimeout(ms)` | receive with timeout |
-| `close()` | close the channel |
-| `isClosed` / `isClosed()` | closed state |
+**Semantics**:
+- **MPMC** (multi-producer, multi-consumer).
+- Buffered channel: senders suspend when full; receivers suspend when empty.
+- Unbuffered channel: send and receive must rendezvous (synchronous handshake).
+- After close: `send` throws; `recv` returns remaining values, then `null` once drained; `tryRecv` returns `(zero, false)`.
 
-### 10.5 `select`
+### 10.6 `select`
 
 `select` multiplexes multiple channel operations. The non-blocking default branch uses `_`.
 
@@ -415,33 +526,149 @@ shared const ch1 = new Channel<int>(2)
 shared const ch2 = new Channel<int>(2)
 
 select {
-    msg from ch1 -> { print("got from ch1:", msg) }
-    msg from ch2 -> { print("got from ch2:", msg) }
-    100 to ch1 -> { print("sent 100 to ch1") }
-    after 1000 -> { print("timeout") }
-    _ -> { print("no channel ready") }
+    msg from ch1 -> { print("got from ch1:", msg) }      // receive arm
+    msg from ch2 -> { print("got from ch2:", msg) }      // receive arm
+    100  to   ch1 -> { print("sent 100 to ch1") }        // send arm
+    _ -> { print("no channel ready") }                   // default arm (non-blocking)
 }
 ```
 
-Semantics:
-
+**Semantics**:
 - Receive arm `name from ch -> body`: equivalent to `name = ch.recv()`, but selected only when `ch` has data.
 - Send arm `value to ch -> body`: equivalent to `ch.send(value)`, but selected only when `ch` has capacity.
-- Timeout arm `after ms -> body`: selected when no channel arm becomes ready before the timeout.
-- Default arm `_ -> body`: runs immediately when no arm is ready; omitting it makes `select` block until an arm becomes ready.
-- When multiple arms are ready at the same time, one is selected randomly, matching Go.
+- Default arm `_ -> body`: runs immediately when no arm is ready; **omitting the default arm** makes `select` block until an arm becomes ready.
+- When multiple arms are ready at the same time, one is selected **randomly** (matching Go).
 
-### 10.6 `scope`
+### 10.7 `scope` (structured concurrency / lexical scope)
 
-```xray
-scope { ... }
-linked scope { ... }
-supervisor scope { ... }
+`scope` is a **statement keyword** that introduces a new lexical block. It serves two purposes:
+
+1. **Pure lexical scope**: identical to a C/Rust `{ ... }` local block; `let` inside the block does not affect outer same-named variables.
+2. **Structured concurrency** (semantic enhancement): coroutines started via `go` inside the block are **awaited automatically** before the block exits.
+
+```ebnf
+ScopeStmt          ::= 'scope' Block
+LinkedScopeStmt    ::= 'linked' 'scope' Block          // sibling failure → cancel all + rethrow
+SupervisorScopeExpr ::= 'supervisor' 'scope' Block     // collect all errors, return Array<string>
 ```
 
-A scope controls the lifetime of child coroutines. Linked and supervisor scopes provide different cancellation/failure propagation policies.
+```xray
+// lexical scope use
+let x = 1
+scope {
+    let x = 10            // shadow the outer x; in effect inside the block
+    print(x)              // 10
+}
+print(x)                  // 1
 
-### 10.7 Safety Model
+// structured concurrency use (with go)
+scope {
+    go worker_a()
+    go worker_b()
+    // before the block exits, both a/b are awaited; an exception in either does not affect siblings
+}
+```
 
-The language design makes cross-coroutine sharing explicit. Ordinary locals are isolated. Shared immutable data is marked `shared const`. Mutable sharing is explicit and constrained. Channels are the preferred way to communicate mutable values.
+**Three scope variants**:
+
+| Form | Behaviour when a child coroutine throws | Return value |
+|---|---|---|
+| `scope { ... }` | Siblings are not cancelled; exceptions do not propagate outward (each task is independent) | none (statement form) |
+| `linked scope { ... }` | **Cancels all siblings** and **rethrows** the first exception outward | none |
+| `supervisor scope { ... }` | **Collects** failure messages from every failing child; siblings do not affect each other | `Array<string>` (error list; empty means all succeeded) |
+
+```xray
+// linked scope: failure propagation
+try {
+    linked scope {
+        go ok_worker()
+        go failing_worker()         // throws
+    }
+} catch (e) {
+    print("caught:", e)              // hits this branch
+}
+
+// supervisor scope: collect errors
+let errors = supervisor scope {
+    go failing("error1")
+    go failing("error2")
+    go ok()
+}
+print(errors.length)                 // 2 (only the failures are counted)
+```
+
+**General semantics**:
+- `scope` is not a function call and does not require an import; it is a keyword block statement.
+- All three forms await every coroutine started by `go` inside the block before exiting.
+
+### 10.8 `move` — cross-coroutine ownership transfer
+
+```ebnf
+MoveExpr ::= 'move' Identifier        // only at call-argument position
+```
+
+`move` is an **argument-prefix modifier** (not a `go` option). It transfers ownership of a `shared let` variable from the current scope to the callee (including coroutines started by `go`, `ch.send()`, etc.). After `move`, the variable is statically marked as **moved**, and any subsequent reference is a compile error.
+
+```xray
+shared let buf = new Bytes(1024 * 1024)
+
+// hand off to a coroutine
+let t = go fn(b: Bytes) -> int {
+    return process(b)
+}(move buf)
+// compile error: buf has been moved
+// print(buf.length)
+
+// hand off to a channel
+shared const ch = new Channel<Bytes>(1)
+shared let payload = new Bytes(4096)
+ch.send(move payload)
+// compile error: payload has been moved
+```
+
+See §7.3 and §7.4 for the capture rules of shared variables.
+
+### 10.9 Synchronisation primitives
+
+xray's default concurrency model favours **message passing + immutable sharing**—`shared const`, `Channel`, `move`, and `scope` already eliminate most data races at compile time, so raw mutexes/locks are **discouraged**.
+
+When mutual exclusion or atomic operations are unavoidable, the runtime provides:
+
+| Primitive | Form | Description |
+|---|---|---|
+| Channel(1) | A single-element channel | The recommended mutex pattern (simulate lock/unlock via send/recv) |
+| `shared let` + `move` | Compile-time exclusivity | Cross-coroutine exclusivity with no runtime overhead |
+
+> **Design note**: xray does not expose generic concurrency primitives such as `Mutex`/`RwLock`/`Atomic*` in the standard library. If introduced in the future, they would be released as a separate unstable module (see `docs/known_bugs.md` and forthcoming design RFCs).
+
+
+### 10.10 `yield` — yield the CPU
+
+```ebnf
+YieldStmt ::= 'yield'
+```
+
+```xray
+for (i in 0..1000) {
+    do_chunk(i)
+    yield                       // explicit safepoint, lets other coroutines run
+}
+```
+
+**Current implementation**: usable as a statement, equivalent to Go's `runtime.Gosched()`; valued `yield` is not supported.
+
+### 10.11 Concurrency safety model
+
+xray uses the type system to **eliminate most data races at compile time**:
+
+| Rule | Enforced |
+|--|--|
+| `go` closures cannot capture ordinary `let` locals | ✅ |
+| `shared const` is read-only and zero-copy across coroutines | ✅ |
+| `shared let` must be `move`d to cross a coroutine boundary | ✅ |
+| Channels for cross-coroutine values | ✅ |
+| Shared mutable state requires explicit Mutex | Doc convention |
+
+**Residual data-race risk** (detected at runtime, not compile time):
+- Sending a mutable class reference via a channel (the receiver and sender may mutate concurrently)—prefer to send `shared const` / `Bytes` / immutable objects, or transfer ownership via `move`.
 <!-- /xr-spec:en -->

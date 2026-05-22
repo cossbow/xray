@@ -782,124 +782,771 @@ export * from "./other"
 
 ## 5. Declarations
 
-### 5.1 Variables
+> Source of truth: `src/frontend/parser/xparse_decl.c`, `src/frontend/parser/xast_nodes_decl.h`, `src/frontend/analyzer/xanalyzer_visitor.c`.
 
-```xray
-let x = 1
-let y: int
-const PI = 3.14159
-shared const CONFIG = { host: "localhost" }
-shared let state = 0
+### 5.1 `let` / `const` / `shared`
+
+```ebnf
+VarDecl ::= ('let' | 'const' | 'shared' ('const' | 'let')) Binding (',' Binding)*
+Binding ::= Pattern (':' Type)? ('=' Expression)?
+Pattern ::= Identifier
+         | '[' BindingPattern (',' BindingPattern)* ','? ']'    // array destructure
+         | '(' BindingPattern (',' BindingPattern)+ ','? ')'    // tuple destructure
+         | '{' Identifier (',' Identifier)* ','? '}'            // object destructure
 ```
 
-`let` creates a mutable binding. `const` creates an immutable binding and must be initialized. A declaration without an initializer needs a type annotation and receives a zero value.
+#### 5.1.1 `let` — mutable binding
 
-`shared const` stores immutable data in a shared/global region. `shared let` is explicit mutable shared state and is subject to move/concurrency restrictions.
+```xray
+let x = 1                         // type inferred as int
+let name: string = "Alice"        // explicit type
+let count: int                    // no initializer: zero value used
+```
 
-### 5.2 Functions
+- Reassignable.
+- Must have an initializer **or** a type annotation; otherwise compile error `E0303`.
+- Without an initializer, the value defaults to the type's zero value (`int` → `0`, `string` → `""`, `bool` → `false`, `T?` → `null`).
+
+#### 5.1.2 `const` — immutable binding
+
+```xray
+const PI = 3.14159
+const MAX_LEN: int = 1024
+```
+
+- Initializer is **required**.
+- Cannot be reassigned (compile error `E0303`).
+- The type may be inferred or annotated explicitly.
+
+#### 5.1.3 `shared const` — cross-coroutine immutable shared
+
+```xray
+shared const CONFIG = { host: "localhost", port: 8080 }
+shared const PRIMES = [2, 3, 5, 7, 11]
+```
+
+- Stored on the **global heap**, refcount-managed.
+- Read-only **zero-copy** access across coroutines.
+- The **only** kind of variable outside the local mutable scope that a `go` closure may legally capture (everything else must be passed explicitly or `move`d).
+
+#### 5.1.4 `shared let` — cross-coroutine mutable, exclusive
+
+```xray
+shared let buffer = new Bytes(1024)
+```
+
+- **Move semantics**: ownership must be transferred explicitly with `move`.
+- Cannot be captured by a `go` closure (must be `move`d).
+- Use after `move` is a compile error.
+
+See [§10.11](#1011-concurrency-safety-model).
+
+#### 5.1.5 Destructuring bindings
+
+```xray
+// array destructuring
+let [a, b, c] = [1, 2, 3]
+let [first, , third] = [10, 20, 30]         // skip elements
+
+// tuple destructuring (multi-return)
+let (q, r) = divmod(17, 5)
+
+// object destructuring (extract by name; **no** rename syntax)
+let { name, age } = { name: "Alice", age: 30 }
+```
+
+Constraints:
+- The number of destructured bindings must match (except with rest patterns).
+- Object destructuring accepts only an `Identifier` list; `{ name: localName }` style renaming is **not** supported.
+
+### 5.2 `fn` function declaration
+
+```ebnf
+FnDecl ::= AttrList? Modifier* 'fn' Identifier TypeParams? '(' ParamList? ')' ReturnType? Block
+ParamList ::= Param (',' Param)*
+Param     ::= Modifier* Identifier ':' Type ('=' DefaultValue)?
+            | '...' Identifier ':' Type
+Modifier  ::= 'in' | 'ref'
+ReturnType ::= ':' Type
+            |  ':' '(' Type (',' Type)+ ')'   // tuple return
+TypeParams ::= '<' Identifier (',' Identifier)* '>'
+AttrList ::= ('@' Identifier ('(' AttrArgList? ')')?)*
+```
+
+#### 5.2.1 Basic form
 
 ```xray
 fn add(a: int, b: int) -> int {
     return a + b
 }
 
-fn log(msg: string) {
-    print(msg)
+fn greet(name: string) -> () {         // explicit Unit
+    print("Hi ${name}")
+}
+
+fn echo(x: int) {                       // omitted return type = ()
+    print(x)
 }
 ```
 
-A no-return function may omit `-> ()`. Function parameters use `name: Type`. Rest parameters use `...name: Type`.
+**Key points**:
+- Parameters **must** carry type annotations (consistent with arrow functions).
+- An omitted return type means `()` (Unit); explicit annotation is recommended for readability.
+- The function body must be a block.
 
-### 5.3 Classes
+#### 5.2.2 Default parameter values
+
+```xray
+fn connect(host: string, port: int = 8080, tls: bool = false) -> () { ... }
+
+connect("localhost")              // port=8080, tls=false
+connect("localhost", 443)         // tls=false
+connect("localhost", 443, true)
+```
+
+- Default values are evaluated at the callee entry; if the caller omits an argument, `null` is passed and the entry replaces it with the default expression.
+- Parameters with default values must appear consecutively at the tail of the parameter list.
+
+#### 5.2.3 Multiple return values
+
+```xray
+fn divmod(a: int, b: int): (int, int) {
+    return (a / b, a % b)
+}
+
+let (q, r) = divmod(17, 5)
+let result = divmod(10, 3)        // result has type (int, int)
+```
+
+**Constraints**:
+- The return type wraps the tuple in parentheses: `(int, bool)`.
+- A single return value omits the parentheses: `: int`.
+- `return (a, b)` requires the parentheses; bare comma `return a, b` is a compile error (`E0801`).
+
+#### 5.2.4 Parameter modifiers
+
+Apply only to **`struct` value-type parameters**.
+
+```xray
+fn length_sq(v: in Vec2) -> float {
+    // v is a read-only reference (no copy, not writable)
+    return v.x * v.x + v.y * v.y
+}
+
+fn translate(v: ref Vec2, dx: float, dy: float) -> () {
+    // v is a mutable reference (changes are visible to the caller)
+    v.x += dx
+    v.y += dy
+}
+```
+
+| Modifier | Semantics |
+|--|--|
+| (none) | Pass by value (struct copy) |
+| `in` | Pass by read-only reference (no copy, not writable) |
+| `ref` | Pass by mutable reference (no copy, writable, observable to caller) |
+
+#### 5.2.5 Rest parameters
+
+```xray
+fn sum(...nums: int) -> int {
+    let total = 0
+    for (n in nums) { total += n }
+    return total
+}
+
+sum(1, 2, 3)        // total = 6
+```
+
+- The rest parameter must be **last**.
+- The actual internal type of `...T` is `Array<T>`.
+- Only one rest parameter is allowed.
+
+#### 5.2.6 Function hoisting
+
+```xray
+main()                       // OK: the function declaration is hoisted
+
+fn main() { ... }
+```
+
+- Top-level `fn` declarations are hoisted to the top of the current scope.
+- `let f = (x: int) -> x` (an arrow function bound to a variable) is **not** hoisted.
+
+#### 5.2.7 Tail-call optimization
+
+The compiler recognises accumulator-style tail recursion and rewrites it into a loop (avoiding stack overflow). See [§17](#17-compilation-pipeline).
+
+```xray
+fn factorial(n: int, acc: int = 1) -> int {
+    if (n <= 1) { return acc }
+    return factorial(n - 1, acc * n)     // tail call: optimized to a loop
+}
+```
+
+#### 5.2.8 Program entry point
+
+xray has **no implicit `main` entry**: scripts/modules execute their top level in declaration order. `fn` declarations are hoisted and registered; expressions and statements run immediately.
+
+```xray
+// hello.xr
+print("loading")          // top-level statement, runs immediately
+fn greet() { print("hi") }
+greet()                   // must be called explicitly
+```
+
+- `fn main()` has no special meaning; call `main()` explicitly if desired.
+- Top-level `return` is forbidden (compile error `E0306`).
+- Multi-file projects specify the entry via the `entry` field of `xray.toml`; the corresponding file follows the script execution rules above.
+
+### 5.3 `class` declaration
+
+```ebnf
+ClassDecl ::= Modifier* 'class' Identifier TypeParams?
+              ('extends' Identifier TypeArgs?)?
+              ('implements' Identifier TypeArgs? (',' Identifier TypeArgs?)*)?
+              '{' ClassMember* '}'
+ClassMember ::= FieldDecl | MethodDecl | ConstructorDecl | StaticBlock
+FieldDecl ::= Modifier* Identifier ':' Type ('=' Expression)?
+MethodDecl ::= Modifier* Identifier '(' ParamList? ')' ReturnType? Block
+            |  Modifier* 'operator' OpToken '(' ParamList? ')' ReturnType? Block
+ConstructorDecl ::= 'constructor' '(' ParamList? ')' Block          // parameter types may be omitted
+Modifier ::= 'private' | 'public' | 'static' | 'final' | 'abstract' | 'override'
+```
+
+> **About `public` and `override`**: both modifiers **are valid keywords lexically**, but in practice they **are almost never written**:
+>
+> - `public` is the **default visibility**—every field/method without `private` is public, so writing `public` explicitly is redundant.
+> - `override` is **optional**—an override happens automatically when the derived class declares a method with the same signature; an explicit `override` annotation is not required.
+>
+> The standard library and the regression tests consistently use the "omit the default modifier" style.
+
+#### 5.3.1 Basic class
 
 ```xray
 class Animal {
-    name: string
+    name: string                       // field
+    private _age: int = 0              // private field with default value
 
     constructor(name: string) {
         this.name = name
     }
 
-    fn speak() -> string {
+    speak() -> string {
         return "..."
+    }
+
+    static create(name: string) -> Animal {
+        return new Animal(name)
+    }
+}
+
+let a = new Animal("Rex")
+print(a.speak())
+print(Animal.create("Bob").name)
+```
+
+#### 5.3.2 Inheritance
+
+```xray
+class Dog extends Animal {
+    constructor(name: string) {
+        super(name)                    // **must** be the first statement (derived classes only)
+    }
+
+    speak() -> string {                  // override: no keyword required
+        return "woof"
     }
 }
 ```
 
-Classes support fields, methods, constructors, inheritance, interfaces, visibility/modifier syntax, static members where implemented, and operator overload declarations where supported by the runtime/analyzer.
+**Constraints**:
+- A derived class constructor's **first statement** must be `super(...)` (unless no constructor is declared); otherwise it is a compile error.
+- `this` must not be accessed before `super(...)`.
+- **Overriding requires no keyword**—any subclass method with the same name and signature automatically overrides the parent (the `override` modifier exists but is **optional**).
+- A `final class` cannot be inherited.
+- A `final` method cannot be overridden.
+- An `abstract` method **must** be implemented by subclasses (unless the subclass is also `abstract`).
+- `super.method()` invokes the shadowed parent method from inside an override.
 
-### 5.4 Structs
+#### 5.3.3 Modifiers
+
+| Modifier | Applies to | Semantics |
+|--|--|--|
+| (none) | field/method | Default public—externally visible |
+| `public` | field/method | **Redundant**—same as default; never written in practice |
+| `private` | field/method | Class-internal access only; subclasses cannot access directly but may go through public parent methods |
+| `static` | field/method | Class-level, not part of an instance; called as `ClassName.method()` |
+| `final` | class/method/field | Class: cannot be inherited. Method: cannot be overridden. Field: cannot be reassigned after initialization |
+| `abstract` | class/method | Cannot be instantiated / must be implemented by subclasses |
+| `override` | method | **Optional**—overrides do not require explicit annotation; documenting only |
+
+**Modifiers may combine**: `private final secret: string = "key123"`, `static final pi() -> float`, `private static counter: int = 0`.
+
+xray has **no** `protected` modifier—subclasses go through public parent methods to reach private fields when needed.
+
+#### 5.3.4 Constructors
+
+```xray
+class Point {
+    x: float
+    y: float
+    constructor(x: float, y: float) {
+        this.x = x
+        this.y = y
+    }
+}
+
+// Parameter types may be omitted (inferred from same-named fields)
+class Vector2 {
+    x: float
+    y: float
+    constructor(x, y) {         // equivalent to (x: float, y: float)
+        this.x = x
+        this.y = y
+    }
+}
+```
+
+- The keyword is `constructor` (not `init`, not the class name).
+- A class has **at most one constructor** (no overloading); multiple creation paths use `static` factory methods.
+- Constructor parameters **may omit their types**—if a parameter shares a name with a field, the type is inferred from that field; otherwise it is inferred from the call-site argument type.
+- The constructor implicitly returns `this` (compiler-injected).
+- Derived class constructors must call `super(...)` first.
+- A `struct` may have **no** constructor (`new Point()` produces a zero-initialized instance which is then assigned manually; see §5.4).
+
+#### 5.3.5 Operator overloading
+
+```xray
+class Vec2 {
+    x: float
+    y: float
+
+    constructor(x: float, y: float) {
+        this.x = x; this.y = y
+    }
+
+    operator+(other: Vec2) -> Vec2 {
+        return new Vec2(this.x + other.x, this.y + other.y)
+    }
+
+    operator==(other: Vec2) -> bool {
+        return this.x == other.x && this.y == other.y
+    }
+
+    operator[](index: int) -> float {
+        if (index == 0) { return this.x }
+        return this.y
+    }
+}
+```
+
+**Overloadable operators** (full list, source: `xparse_oop.c`):
+
+| Category | Operators | Arity | Notes |
+|--|--|--|--|
+| Binary arithmetic | `+` `-` `*` `/` `%` | 1 | A unary `-` with no parameters acts as unary minus |
+| Bitwise | `&` `\|` `^` `<<` `>>` | 1 | |
+| Comparison | `==` `!=` `<` `<=` `>` `>=` | 1 | Typically implement `==`/`!=` and `<`/`<=`/`>`/`>=` as pairs |
+| Indexing | `[]` (getter), `[]=` (setter) | 1 / 2 | The setter is `(index, value)` |
+| Unary | `!` `~` `++` `--` | 0 | |
+| Compound assignment | `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` | 1 | |
+
+```xray
+class Counter {
+    n: int = 0
+    operator++() -> Counter { this.n = this.n + 1; return this }
+    operator+=(other: int) -> Counter { this.n = this.n + other; return this }
+    operator[](i: int) -> int { return this.n + i }
+    operator[]=(i: int, v: int) { this.n = v - i }
+}
+```
+
+**Cannot** be overloaded: `&&` `\|\|` `=` `?.` `?:` `??` `,` `.`
+
+#### 5.3.6 Custom iterators
+
+Implement `iterator()` returning an object with `hasNext() -> bool` and `next() -> T?` to enable `for-in`. See §14.15.
+
+### 5.4 `struct` declaration
+
+```ebnf
+StructDecl ::= 'struct' Identifier TypeParams?
+               ('implements' Identifier (',' Identifier)*)?
+               '{' StructMember* '}'
+```
 
 ```xray
 struct Point {
     x: float
     y: float
+
+    magnitude_sq() -> float {
+        return this.x * this.x + this.y * this.y
+    }
+}
+
+// Two creation styles
+let p = new Point()                  // default-construct (zero-valued fields), then assign
+p.x = 3.0
+p.y = 4.0
+
+let q = Point{x: 3.0, y: 4.0}        // struct literal: TypeName + { field: value }
+let pt = Point{x: 1.0, y: 2.0}
+
+// Value semantics: assignment and parameter passing copy
+let b = q                            // b is an independent copy of q
+b.x = 99.0
+// q.x is still 3.0
+```
+
+**Differences from `class`**:
+
+| Dimension | `class` | `struct` |
+|--|--|--|
+| Memory model | Reference type (heap) | Value type (stack or inlined) |
+| Assign / pass | Shared reference | **Copy** (`let b = a` produces an independent copy) |
+| Inheritance | Supports `extends` | **No** inheritance |
+| `implements` | ✅ | ✅ |
+| Generics | ✅ | ✅ |
+| `static` / `private` / `final` | ✅ | ✅ |
+| Operator overload | ✅ | ✅ |
+| Constructor | `constructor(...)` | **Optional**: `new Point()` yields a zero-valued instance |
+| Literal | none | `TypeName{field: value, ...}` |
+
+**When to use**:
+- Math types (Vec2/Vec3/Quat/Color)
+- Short-lived values (iterator state, ad-hoc tuples)
+- Performance-sensitive data where heap allocation should be avoided
+
+### 5.5 `interface` and `implements`
+
+xray's interface implementation is **explicit** (unlike Go's structural implementation): a class/struct must list interfaces with `implements`.
+
+```ebnf
+InterfaceDecl ::= 'interface' Identifier TypeParams?
+                  ('extends' NamedType (',' NamedType)*)?
+                  '{' InterfaceMember* '}'
+InterfaceMember ::= Identifier '(' ParamList? ')' ReturnType?       // method signature
+                 |  ('const')? Identifier ':' Type                   // property signature (`const` for read-only)
+```
+
+```xray
+interface Shape {
+    area() -> float
+    perimeter() -> float
+}
+
+// Interface method return types may be omitted (default ())
+interface Greeter {
+    greet(name: string)             // same as greet(name: string) -> ()
+    log()                           // no parameters, no return value
+}
+
+class Circle implements Shape {
+    radius: float
+    constructor(r: float) { this.radius = r }
+    area() -> float { return 3.14 * this.radius * this.radius }
+    perimeter() -> float { return 6.28 * this.radius }
+}
+
+// Implement multiple interfaces
+class Logger implements Shape, Greeter {
+    radius: float
+    constructor(r: float) { this.radius = r }
+    area() -> float { return 3.14 * this.radius * this.radius }
+    perimeter() -> float { return 6.28 * this.radius }
+    greet(name: string) { print("hello,", name) }
+    log() { print("logging") }
+}
+
+fn describe(s: Shape) -> string {
+    return "area=${s.area()}, perimeter=${s.perimeter()}"
 }
 ```
 
-Struct declarations use class-like member syntax. They are value-oriented declarations and can implement interfaces.
+**Constraints**:
 
-### 5.5 Interfaces
+- Interfaces may extend other interfaces (`extends`); generics (`interface Container<T>`) and constraints (`interface Stats<T: Numeric>`) are supported.
+- Classes/structs use `implements I1, I2, ...` to declare implementation of one or more interfaces (**explicit**; structural implementation is not supported).
+- The implementing type **must** provide every interface member (matching name/parameters/return type for methods; matching name/type for properties).
+- **Return types in interface method declarations may be omitted** (default `()`).
+- Interface methods are `abstract` by default (no body).
+- Interfaces may declare **property signatures** (`length: int`, `const id: int`); the implementing type must provide a corresponding field.
+- Implementing types may add additional methods (the interface defines the minimum surface).
 
 ```xray
-interface Drawable {
-    draw() -> ()
+// property signatures + interface inheritance
+interface HasLength {
+    length: int
+}
+interface SizedCollection<T> extends HasLength {
+    first() -> T
+}
+
+class Buffer implements SizedCollection<int> {
+    length: int                       // implements the property signature
+    private data: Array<int>
+    constructor(n: int) {
+        this.length = n
+        this.data = []
+    }
+    first() -> int { return this.data[0] }
 }
 ```
 
-Interfaces describe method contracts. A class/struct/enum may declare `implements InterfaceName`.
+### 5.6 `enum` declaration
 
-### 5.6 Enums
+xray's `enum` is an **algebraic data type (ADT)**: each variant may be a payload-free tag (C-style enum) or carry typed payload data (ADT-style). Both styles can be mixed in the same enum.
 
-#### Simple Backed Enums
-
-```xray
-enum Color {
-    Red = "red",
-    Green = "green",
-    Blue = "blue"
-}
+```ebnf
+EnumDecl       ::= 'enum' Identifier TypeParams?
+                   ('implements' NamedType (',' NamedType)*)?
+                   '{' EnumVariant (',' EnumVariant)* ','? EnumMethod* '}'
+EnumVariant    ::= Identifier VariantPayload?
+                |  Identifier '=' BackingValue                // explicit backing value for simple enums
+EnumMethod     ::= 'fn' Identifier TypeParams? '(' ParamList? ')' ReturnType? Block
+VariantPayload ::= '(' VariantField (',' VariantField)* ')'
+VariantField   ::= (Identifier ':')? Type
+BackingValue   ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral
 ```
 
-Backed enum values may be `int`, `float`, `string`, or `bool`. All members in one backed enum must use the same backing type. Mixed backing value types are a compile-time analyzer error.
+> Variant declarations come first (comma-separated); method declarations follow all variants (no commas, separated by block boundaries — same convention as `class` member methods). See §5.6.7.
 
-#### ADT Enums
+#### 5.6.1 Simple enums (no payload)
 
 ```xray
+enum Color { Red, Green, Blue }
+Color.Red.value     // 0
+Color.Blue.value    // 2
+
+enum HttpStatus {
+    OK = 200,
+    NotFound = 404,
+    InternalError = 500,
+}
+
+enum Direction { North = "N", South = "S", East = "E", West = "W" }
+enum Flag      { On = true, Off = false }
+enum Pi        { Approximate = 3.14, Better = 3.14159 }
+```
+
+All members of a simple enum must use the same backing type (all `int`, all `float`, all `string`, or all `bool`). Mixed types are a compile error `XR_ERR_ANALYZE_ENUM_MIXED_TYPE`.
+
+#### 5.6.2 ADT enums (with payload)
+
+A variant name may be followed by parentheses declaring payload fields (positional or named):
+
+```xray
+// positional payload
 enum Result<T, E> {
-    Ok(T)
-    Err(E)
+    Ok(T),
+    Err(E),
+}
+
+// named-field payload (recommended for readability)
+enum NetEvent {
+    Connected,
+    Disconnected(reason: string),
+    DataReceived(bytes: Bytes),
+    Error(code: int, message: string),
+}
+
+// state machine
+enum ConnState {
+    Idle,
+    Connecting(retry: int),
+    Connected(peer: string, since: int),
+    Failed(reason: string),
+}
+
+// AST nodes
+enum Expr {
+    Number(int),
+    Binary(op: string, left: Expr, right: Expr),
+    Call(name: string, args: Array<Expr>),
 }
 ```
 
-ADT variants may carry payloads and are destructured with `match`.
+**ADT vs. simple enums**:
 
-### 5.7 Type Aliases
+| Feature | Simple enum | ADT enum |
+|------|--|--|
+| Carries data | ❌ | ✅ Each variant has its own field set |
+| `.value` / `.ordinal` | ✅ | Available only on payload-free variants |
+| Backing value (`= 200`) | ✅ | ❌ Cannot coexist with payloads |
+| Generics | ❌ | ✅ `enum Result<T, E> { ... }` |
+| `match` destructuring | By value only | By variant + payload destructuring |
+| `for-in` iteration | ✅ In declaration order | ❌ Meaningless when payloads are present |
+| Memory layout | Integer/string value | tag + payload |
+
+Mixing: a single enum may contain both payload-free and payload-bearing variants (see `NetEvent` / `ConnState` above).
+
+#### 5.6.3 Construction and destructuring
+
+Construction:
 
 ```xray
-type Mapper = (int) -> int
-type User = { name: string, age: int }
+let c = Color.Red                                   // simple
+let r1 = Result.Ok(42)                              // positional payload
+let e1 = NetEvent.DataReceived(bytes: b)            // named payload, field name allowed
+let e2 = NetEvent.Error(404, "not found")           // field name omitted, positional
+let e3 = NetEvent.Connected                         // payload-free variant: no parentheses
 ```
 
-Aliases do not introduce new nominal types. Object aliases are sealed when used for annotations.
-
-### 5.8 Import and Export
+Destructuring (match):
 
 ```xray
-import time
-import http as httpClient
-import alice/utils as utils
-import "./helper.xr" as helper
-import "models/user" as user
-import { readFile, writeFile as write } from io
-import { publicFn } from "./helper.xr"
+match (event) {
+    NetEvent.Connected            -> print("connected"),
+    NetEvent.Disconnected(reason) -> print("by:", reason),
+    NetEvent.DataReceived(b)      -> process(b),
+    NetEvent.Error(code, msg)     -> log.error(code, msg),
+}
+```
 
+See §6.3.
+
+#### 5.6.4 Member API for simple enums
+
+Applies only to **payload-free** variants (including pure-tag variants inside an ADT enum).
+
+Instance properties (act on the enum value):
+
+```xray
+Color.Red.name        // "Red"          variant name (string)
+Color.Red.value       // 0              backing value
+Color.Red.ordinal     // 0              declaration index (int, zero-based)
+Color.Red.toString()  // "Color.Red"    "<EnumName>.<VariantName>" format
+```
+
+Class statics:
+
+```xray
+Color.memberCount     // 3              count of simple variants (int)
+Color.getMember(0)    // Color.Red      lookup by ordinal
+```
+
+ADT variants with payloads do **not** support `.value` / `.ordinal` / `getMember`, but `.name` and `toString()` are still available (the latter includes a payload summary, e.g. `Result.Ok(42)`).
+
+#### 5.6.5 Iteration
+
+Simple enums can be iterated with `for-in` in declaration order:
+
+```xray
+for (c in Color) { print(c.name) }        // "Red" "Green" "Blue"
+```
+
+ADT enums with payloads do **not** support direct `for-in`—iterating "all possible values" is meaningless (`Result<int, string>` has infinitely many).
+
+#### 5.6.6 Reverse lookup (value to member)
+
+Simple integer enums benefit from reverse-lookup optimization (Tier 1/2 contiguous/sparse; other types fall back to a linear scan). ADT variants do not support reverse lookup.
+
+#### 5.6.7 Enum instance methods
+
+Instance methods may be defined inside `enum` bodies with the same syntax as `class` methods (no `impl` keyword is introduced). Methods are callable on every variant; method bodies typically `match (this)` to dispatch on the variant:
+
+```xray
+enum Shape {
+    Circle(radius: float),
+    Rect(w: float, h: float),
+    Triangle(a: float, b: float, c: float)
+
+    fn area() -> float {
+        return match (this) {
+            Shape.Circle(r)     -> 3.14159 * r * r,
+            Shape.Rect(w, h)    -> w * h,
+            Shape.Triangle(a, b, c) -> {
+                let s = (a + b + c) / 2.0
+                return (s * (s-a) * (s-b) * (s-c)).sqrt()
+            },
+        }
+    }
+
+    fn isRound() -> bool {
+        return match (this) {
+            Shape.Circle(_) -> true,
+            _               -> false,
+        }
+    }
+}
+
+let s = Shape.Circle(radius: 1.0)
+print(s.area())          // 3.14159
+print(s.isRound())       // true
+```
+
+> Note that `Triangle(...)` is not followed by a comma — the last variant is separated from the method block by whitespace (a trailing comma is allowed but not required).
+
+**Rules**:
+
+- Method syntax matches `class` methods: `fn name(params) -> ReturnType { body }`.
+- Inside a method, the static type of `this` is the enum itself (e.g. `Result<T, E>`); use `match (this)` to extract a variant's payload.
+- `constructor` is **not** supported (variant syntax already serves as the constructor).
+- Inheritance is **not** supported (`enum E extends ...` is illegal); for shared behaviour use interface implementation (`enum E implements Iface`) or top-level functions.
+- Simple (payload-free) enums may also define methods; inside such methods `this` is the enum value and can be compared directly with `==`:
+  ```xray
+  enum Color {
+      Red, Green, Blue
+
+      fn isWarm() -> bool { return this == Color.Red }
+  }
+  ```
+- Methods **may not** share a name with a variant.
+- Static methods are **not yet supported** (use top-level "factory" functions).
+
+> This design matches Java enums, Swift enums, and Kotlin sealed classes. Rust's `impl` blocks are **not** introduced in xray—xray defines methods inside the type body uniformly.
+
+### 5.7 `type` aliases
+
+```ebnf
+TypeAliasDecl ::= 'type' Identifier TypeParams? '=' Type
+```
+
+```xray
+type Outcome = int | string                          // union alias (do not collide with the prelude's Result)
+type Mapper = fn(int) -> int                         // function-type alias
+type Point = { x: float, y: float }                  // structural object alias (sealed)
+```
+
+**Semantics**:
+- An alias is **purely a syntactic** substitution; it does not introduce a new nominal type.
+- A `type Point = {...}` object alias is **sealed** when used as an annotation: accessing or assigning an undeclared field is a compile error.
+- `type T = Json` equals `Json` (not sealed).
+- Aliases may be referenced before their declaration but **must not be cyclic**.
+- `type` aliases currently do not take type parameters; generic abstraction is provided by generic functions and generic class/struct/enum/interface.
+
+See [§2.4.6](#246-json) and [§2.8](#28-type-aliases).
+
+### 5.8 `import` / `export`
+
+See [§11](#11-modules). Syntax highlights:
+
+```xray
+// stdlib / third-party packages: bare identifiers; alias auto-derived
+import time
+import http
+import alice/utils as utils
+
+// File path or directory path: string, with explicit `as` or alias derived from the trailing segment
+import "./modules/mod_a.xr" as a
+import "../utils/string_utils.xr" as utils
+import "models/user" as user
+
+// Named import: supports quoted paths or bare module names; members may be renamed with `as`
+import { readFile, writeFile as write } from io
+import { publicFn } from "./modules/mod_a.xr"
+
+// Exports
 export fn publicFn() -> string { return "hi" }
 export const VERSION = "1.0"
-export publicFn, VERSION
-export { publicFn as fnAlias } from "./other"
+export publicFn, VERSION                    // post-export of already-declared identifiers
+export { name1, name2 as alias } from "./other"
 export * from "./other"
 ```
 
-JavaScript default imports (`import name from "module"`) are not supported.
+**xray does not support** the JavaScript default-import form `import name from "module"`. Use `import "module" as name`, `import module`, or `import { name } from module`.
+
+For full rules, path resolution, and visibility details see [§11 Modules](#11-modules).
 <!-- /xr-spec:en -->
