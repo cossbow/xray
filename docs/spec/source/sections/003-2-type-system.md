@@ -75,7 +75,7 @@ Xray 是静态类型语言；每个表达式在编译期有确定类型。类型
 | `false`、`null`、`0`、`0.0`、`""`、`Bytes(0)`、空数组 / 空 Map | **falsy** |
 | 其他一切（包括 `0.0001`、非空字符串/集合、对象引用） | **truthy** |
 
-```xray
+```xray @id=types-truthy-falsy
 let x: int? = maybe_int()
 if (x) {                  // truthy 上下文：x 既不是 null 也不是 0 时进入
     print(x + 1)          // 此分支中 x 被窄化为 int
@@ -118,7 +118,7 @@ let r: () = log("hi")                        // 允许；r 是 Unit 值
 
 有序可变数组。详见 §14.1。
 
-```xray
+```xray @id=types-array
 let a: Array<int> = [1, 2, 3]
 let b = [1, 2, 3]                // 推断为 Array<int>
 let c: Array<string> = []         // 显式空数组
@@ -132,7 +132,7 @@ let c: Array<string> = []         // 显式空数组
 
 **Map 字面量**必须用 `#{ ... }` 前缀，分隔符用 `:`（与 Json 一致，靠 `#` 前缀消歧）：
 
-```xray
+```xray @id=types-map
 let m: Map<string, int> = #{"a": 1, "b": 2}
 let m2 = #{"a": 1, "b": 2}
 let empty = #{}                                     // 空 Map
@@ -155,7 +155,7 @@ let v = m["a"]                                      // 取值；不存在返回 
 
 去重集合。详见 §14.4。
 
-```xray
+```xray @id=types-set
 let s: Set<int> = #[1, 2, 3]
 ```
 
@@ -163,7 +163,7 @@ let s: Set<int> = #[1, 2, 3]
 
 协程间通信通道。**必须**用 `const` 声明（见 §10.5）。
 
-```xray
+```xray @id=types-channel
 const ch: Channel<int> = new Channel<int>(10)
 ```
 
@@ -182,7 +182,7 @@ let init = new Bytes([72, 101, 108, 108, 111])
 
 **对象字面量** `{ field: value, ... }` 与 Map 字面量的关键区别：
 
-```xray
+```xray @id=types-json-object
 // Object/Json 字面量：标识符或字符串 key + 冒号 ':'
 let data: Json = { name: "Alice", tags: ["a", "b"], age: 30 }
 let user = { name: "Bob", age: 25 }       // 默认类型为 Json
@@ -241,7 +241,7 @@ u2.extra = "x"        // OK（Json 是动态的）
 
 `T?` 是 `T | null` 的语法糖。
 
-```xray
+```xray @id=types-nullable
 let x: int? = null      // OK
 let y: int? = 42        // OK
 let z: int = null       // 编译错误：null 不是 int
@@ -268,7 +268,7 @@ if (x is int) {
 
 ### 2.6 Union 类型
 
-```xray
+```xray @id=types-union-basic
 let v: int | string = 42
 v = "hello"             // OK
 ```
@@ -294,7 +294,7 @@ match v {
 
 xray 的元组**是头等公民**——可以作为任意值出现、作为字段保存、嵌套。
 
-```xray
+```xray @id=types-tuple
 // 字面量
 let t = (1, 2, 3)                 // 类型推断为 (int, int, int)
 let h = (10, "hi", true)          // 异构元组
@@ -311,11 +311,11 @@ let a     = nest.0.0              // 1
 let b     = nest.1.1              // 4
 
 // 函数返回与解构
-fn divmod(a: int, b: int): (int, int) { return (a / b, a % b) }
+fn divmod(a: int, b: int) -> (int, int) { return (a / b, a % b) }
 let (q, r) = divmod(17, 5)        // tuple destructure
 
 // 泛型
-fn pair<A, B>(a: A, b: B): (A, B) { return (a, b) }
+fn pair<A, B>(a: A, b: B) -> (A, B) { return (a, b) }
 let p2 = pair(1, "x")             // (int, string)
 ```
 
@@ -327,7 +327,7 @@ let p2 = pair(1, "x")             // (int, string)
 
 ### 2.8 类型别名
 
-```xray
+```xray @id=types-alias
 type Result = int | string
 type Mapper = (int) -> int
 type Point = { x: float, y: float }
@@ -339,7 +339,7 @@ type Point = { x: float, y: float }
 
 详见 §7.4。简述：
 
-```xray
+```xray @id=types-inference
 let x = 1               // x: int
 let y = 1.5             // y: float
 let z = "hello"         // z: string
@@ -372,7 +372,7 @@ let f = (x: int) -> x   // f: (int) -> int —— 箭头参数必须标注
 
 #### 2.10.2 显式 `as`
 
-```xray
+```xray @id=types-cast
 let n = x as int        // 失败抛 TypeError
 let n = x as int?       // 失败返回 null（安全转换）
 ```
@@ -494,7 +494,7 @@ Literals default to `float`.
 | `false`, `null`, `0`, `0.0`, `""`, `Bytes(0)`, empty array / empty Map | **falsy** |
 | Everything else (including `0.0001`, non-empty strings/collections, object references) | **truthy** |
 
-```xray
+```xray @id=types-truthy-falsy
 let x: int? = maybe_int()
 if (x) {                  // truthy context: enters when x is neither null nor 0
     print(x + 1)          // x is narrowed to int in this branch
@@ -537,7 +537,7 @@ let r: () = log("hi")                        // allowed; r is a Unit value
 
 Ordered mutable array. See §14.1.
 
-```xray
+```xray @id=types-array
 let a: Array<int> = [1, 2, 3]
 let b = [1, 2, 3]                // inferred as Array<int>
 let c: Array<string> = []         // explicit empty array
@@ -551,7 +551,7 @@ Hash table that **preserves insertion order**. See §14.7.
 
 **Map literals** must use the `#{ ... }` prefix with `:` separators (consistent with Json; disambiguated by the `#` prefix):
 
-```xray
+```xray @id=types-map
 let m: Map<string, int> = #{"a": 1, "b": 2}
 let m2 = #{"a": 1, "b": 2}
 let empty = #{}                                     // empty Map
@@ -574,7 +574,7 @@ let v = m["a"]                                      // lookup; returns null if a
 
 Deduplicated collection. See §14.4.
 
-```xray
+```xray @id=types-set
 let s: Set<int> = #[1, 2, 3]
 ```
 
@@ -582,7 +582,7 @@ let s: Set<int> = #[1, 2, 3]
 
 Inter-coroutine communication channel. **Must** be declared `const` (see §10.5).
 
-```xray
+```xray @id=types-channel
 const ch: Channel<int> = new Channel<int>(10)
 ```
 
@@ -601,7 +601,7 @@ let init = new Bytes([72, 101, 108, 108, 111])
 
 The key difference between an **object literal** `{ field: value, ... }` and a Map literal:
 
-```xray
+```xray @id=types-json-object
 // Object/Json literal: identifier or string key + colon ':'
 let data: Json = { name: "Alice", tags: ["a", "b"], age: 30 }
 let user = { name: "Bob", age: 25 }       // default type is Json
@@ -660,7 +660,7 @@ Keys of `WeakMap` and elements of `WeakSet` must be heap objects; weak reference
 
 `T?` is sugar for `T | null`.
 
-```xray
+```xray @id=types-nullable
 let x: int? = null      // OK
 let y: int? = 42        // OK
 let z: int = null       // compile error: null is not int
@@ -687,7 +687,7 @@ if (x is int) {
 
 ### 2.6 Union Types
 
-```xray
+```xray @id=types-union-basic
 let v: int | string = 42
 v = "hello"             // OK
 ```
@@ -713,7 +713,7 @@ match v {
 
 Xray's tuples are **first-class** — they may appear as any value, be stored as fields, and nest.
 
-```xray
+```xray @id=types-tuple
 // Literals
 let t = (1, 2, 3)                 // type inferred as (int, int, int)
 let h = (10, "hi", true)          // heterogeneous tuple
@@ -730,11 +730,11 @@ let a     = nest.0.0              // 1
 let b     = nest.1.1              // 4
 
 // Function return and destructuring
-fn divmod(a: int, b: int): (int, int) { return (a / b, a % b) }
+fn divmod(a: int, b: int) -> (int, int) { return (a / b, a % b) }
 let (q, r) = divmod(17, 5)        // tuple destructure
 
 // Generic
-fn pair<A, B>(a: A, b: B): (A, B) { return (a, b) }
+fn pair<A, B>(a: A, b: B) -> (A, B) { return (a, b) }
 let p2 = pair(1, "x")             // (int, string)
 ```
 
@@ -746,7 +746,7 @@ let p2 = pair(1, "x")             // (int, string)
 
 ### 2.8 Type Aliases
 
-```xray
+```xray @id=types-alias
 type Result = int | string
 type Mapper = (int) -> int
 type Point = { x: float, y: float }
@@ -758,7 +758,7 @@ Aliases are **purely syntactic** equivalences; they do not introduce new types.
 
 See §7.4 for details. In summary:
 
-```xray
+```xray @id=types-inference
 let x = 1               // x: int
 let y = 1.5             // y: float
 let z = "hello"         // z: string
@@ -791,7 +791,7 @@ let f = (x: int) -> x   // f: (int) -> int — arrow parameters require annotati
 
 #### 2.10.2 Explicit `as`
 
-```xray
+```xray @id=types-cast
 let n = x as int        // throws TypeError on failure
 let n = x as int?       // returns null on failure (safe cast)
 ```

@@ -1,0 +1,5 @@
+{
+  "module": "json",
+  "summary": "JSON parse/stringify, keys/values helpers",
+  "lead": "JSON parse/stringify, keys/values helpers."
+}

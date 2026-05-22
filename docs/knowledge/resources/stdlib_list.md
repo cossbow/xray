@@ -29,4 +29,4 @@ id: stdlib_list
 | `xml` | XML parsing |
 | `yaml` | YAML parsing |
 
-Usage: `import <module>` then call `module.function()`
+Usage: `import <module>` then call `module.function()`.

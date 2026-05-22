@@ -37,7 +37,7 @@ order: 014
 | `typeof(x)` | `(value) -> string` | 返回运行时类型名字符串 |
 | `x is T` | 表达式 | 运行时类型检查，分析器可做类型窄化 |
 
-```xray
+```xray @id=builtin-typeof-is
 let x = 42
 print(typeof(x))                // "int"
 print(x is int)                 // true
@@ -111,7 +111,7 @@ These global functions and built-in constructor/static functions are usable with
 | `typeof(x)` | `(value) -> string` | returns the runtime type-name string |
 | `x is T` | expression | runtime type check; the analyzer may narrow types |
 
-```xray
+```xray @id=builtin-typeof-is
 let x = 42
 print(typeof(x))                // "int"
 print(x is int)                 // true

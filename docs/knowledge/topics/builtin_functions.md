@@ -6,16 +6,18 @@ aliases: [builtin, print, dump, typeof, builtins]
 ---
 ## Built-in Functions
 
+### Core built-ins
 - `print(value)` — print with newline
 - `dump(value)` — debug print with type info
-- `typeof(value)` — returns type as int
-- `int(value)` — convert to int
-- `float(value)` — convert to float
-- `string(value)` — convert to string
-- `bool(value)` — convert to bool
-- `assert(condition)` — assert truthy
-- `assert_eq(a, b)` — assert equal
-- `assert_ne(a, b)` — assert not equal
-- `assert_true(x)` — assert true
-- `assert_false(x)` — assert false
-- `assert_throws(fn)` — assert fn throws
+- `typeof(value)` — return the runtime type name
+- `x is T` — runtime type check with analyzer narrowing
+- `int(value)` / `float(value)` / `string(value)` / `bool(value)` — explicit conversions
+- `assert(condition)` and `assert_*` helpers — testing assertions
+
+### Type inspection
+```xray
+let x = 42
+print(typeof(x))                // "int"
+print(x is int)                 // true
+print(typeof(x) == "int")       // true
+```

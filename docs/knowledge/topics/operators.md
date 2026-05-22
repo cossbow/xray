@@ -6,6 +6,7 @@ aliases: [operator, arithmetic, comparison, logical, bitwise]
 ---
 ## Operators
 
+### Operator groups
 ### Arithmetic: `+`, `-`, `*`, `/`, `%`, `**` (power)
 ### Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 ### Logical: `&&`, `||`, `!`

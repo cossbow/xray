@@ -58,7 +58,7 @@ ImportModule  ::= StringLiteral | ModuleName
 ModuleName    ::= Identifier ('/' Identifier)?
 ```
 
-```xray
+```xray @id=modules-import
 // 1. stdlib：裸标识符；没有 `as` 时别名等于模块名
 import time
 import datetime
@@ -100,10 +100,13 @@ ExportStmt ::= 'export' Declaration                              // 直接 expor
 ExportSpec ::= Identifier ('as' Identifier)?
 ```
 
-```xray
+```xray @id=modules-export
 // 1. 直接 export 声明
-export fn publicFn() -> string { return "hi" }
-export class PublicClass { ... }
+export fn helper() { return }
+export class MyClass {
+    value: int
+    constructor() { this.value = 1 }
+}
 export const VERSION = "1.0"
 
 // 2. export 已声明的标识符（用于内部先声明、最后统一暴露）
@@ -148,7 +151,7 @@ XRAY_API void register_time_module(xray_vm_t* vm) {
 
 xray 端用法相同：
 
-```xray
+```xray @id=modules-use
 import time
 let t = time.now()
 time.sleep(100)
@@ -212,7 +215,7 @@ ImportModule  ::= StringLiteral | ModuleName
 ModuleName    ::= Identifier ('/' Identifier)?
 ```
 
-```xray
+```xray @id=modules-import
 // 1. stdlib: bare identifier; without `as`, the alias equals the module name
 import time
 import datetime
@@ -254,10 +257,13 @@ ExportStmt ::= 'export' Declaration                              // export the d
 ExportSpec ::= Identifier ('as' Identifier)?
 ```
 
-```xray
+```xray @id=modules-export
 // 1. export a declaration directly
-export fn publicFn() -> string { return "hi" }
-export class PublicClass { ... }
+export fn helper() { return }
+export class MyClass {
+    value: int
+    constructor() { this.value = 1 }
+}
 export const VERSION = "1.0"
 
 // 2. export an already-declared identifier (declare internally first, expose at the end)
@@ -302,7 +308,7 @@ XRAY_API void register_time_module(xray_vm_t* vm) {
 
 Usage from Xray code is identical:
 
-```xray
+```xray @id=modules-use
 import time
 let t = time.now()
 time.sleep(100)

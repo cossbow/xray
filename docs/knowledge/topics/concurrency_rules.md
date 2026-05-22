@@ -6,30 +6,46 @@ aliases: [shared_rules, sharing, move, safety, concurrent]
 ---
 ## Concurrency Safety Rules
 
-**Golden rule: If it compiles, it's concurrency-safe.**
+### Sharing model
+- `shared const` is immutable and can be shared across coroutines without copying
+- `shared let` represents exclusive mutable ownership and must be transferred with `move`
+- ordinary local variables cannot be captured by `go` closures; pass data explicitly
 
-### Three ways to share data across coroutines:
-
-| Mechanism | Syntax | How it works |
-|-----------|--------|-------------|
-| shared const | `shared const CFG = {...}` | Zero-copy reads, immutable |
-| Channel | `shared const ch = new Channel<T>(n)` | Deep-copy on send |
-| Function params | `go fn(data)` | Deep-copied to child |
-
-### What you CANNOT do (compiler rejects these):
+### Move into coroutine
 ```xray
-let x = [1,2,3]
-go fn() { print(x) }()    // ERROR: cannot capture let variable
-
-let ch = new Channel<int>(1) // ERROR: Channel must be shared const for coroutine sharing
-
-shared let data = [1,2,3]
-go fn() { data.push(4) }() // ERROR: cannot capture shared let
+shared let data = { value: 10 }
+let task = go fn(d: Json) -> int {
+    return d.value + 1
+}(move data)        // transfer data ownership to the coroutine; data is unusable afterwards
 ```
 
-### Move semantics
+### Move ownership
 ```xray
-shared let data = [1,2,3]
-go fn() { let local = move data }()  // ownership transferred
-print(data)  // ERROR: data already moved
+shared let buf = new Bytes(1024 * 1024)
+
+// hand off to a coroutine
+let t = go fn(b: Bytes) -> int {
+    return process(b)
+}(move buf)
+// compile error: buf has been moved
+// print(buf.length)
+
+// hand off to a channel
+shared const ch = new Channel<Bytes>(1)
+shared let payload = new Bytes(4096)
+ch.send(move payload)
+// compile error: payload has been moved
+```
+
+### Channels
+```xray
+shared const ch = new Channel<int>(10)
+ch.send(42)                             // blocking send
+let v = ch.recv()                       // blocking receive (null after close + drain)
+
+let sent = ch.trySend(99)               // non-blocking send: true / false
+let (next, ok) = ch.tryRecv()           // non-blocking receive: value + ok flag
+if (ok) { print(next) }
+
+ch.close()
 ```

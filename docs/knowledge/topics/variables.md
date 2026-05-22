@@ -6,27 +6,39 @@ aliases: [let, const, var, shared, declaration]
 ---
 ## Variables
 
+### let
 ```xray
-let x = 1              // mutable
-const PI = 3.14        // immutable
-let name: string = "Alice"  // with type annotation
-let age: int? = null   // nullable
+let x = 1                         // type inferred as int
+let name: string = "Alice"        // explicit type
+let count: int                    // no initializer: zero value used
 ```
 
-### Modifiers
-- `let` — mutable, can be reassigned
-- `const` — immutable, cannot be reassigned
-- `shared const` — immutable, readable across coroutines (zero-copy)
-- `shared let` — mutable, uses move semantics for ownership transfer
-
-### Multiple assignment
+### const
 ```xray
-let (a, b) = (1, 2)
-let (q, r) = divmod(17, 5)  // from function returning multiple values
+const PI = 3.14159
+const MAX_LEN: int = 1024
+```
+
+### shared const
+```xray
+shared const CONFIG = { host: "localhost", port: 8080 }
+shared const PRIMES = [2, 3, 5, 7, 11]
+```
+
+### shared let
+```xray
+shared let buffer = new Bytes(1024)
 ```
 
 ### Destructuring
 ```xray
-let [a, b, c] = [10, 20, 30]    // array destructuring
-let { name, age } = obj          // object destructuring (no renaming)
+// array destructuring
+let [a, b, c] = [1, 2, 3]
+let [first, , third] = [10, 20, 30]         // skip elements
+
+// tuple destructuring (multi-return)
+let (q, r) = divmod(17, 5)
+
+// object destructuring (extract by name; **no** rename syntax)
+let { name, age } = { name: "Alice", age: 30 }
 ```

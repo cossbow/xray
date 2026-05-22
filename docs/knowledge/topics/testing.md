@@ -6,23 +6,49 @@ aliases: [test, assert, assert_eq, unit_test]
 ---
 ## Testing
 
+### Basic test
 ```xray
 @test
-fn test_add() {
+fn test_addition() {
     assert_eq(1 + 1, 2)
-    assert_true(3 > 2)
-    assert_false(1 > 2)
-    assert_ne("a", "b")
 }
 
-@test(skip)
-fn test_todo() { return }  // skipped
-
-@test(timeout: 5000)
-fn test_slow() { return }  // 5s timeout
-
-// Assert that a function throws
-assert_throws(fn() { throw new Exception("error") })
+@test
+fn test_with_assertions() {
+    let result = compute()
+    assert_eq(result, 42)
+    assert(result > 0)
+}
 ```
 
-Run with: `xray test <file_or_dir>`
+### Async test
+```xray
+@test
+fn test_async_fetch() {
+    let task = go fetch_data("http://...")
+    let result = await task
+    assert_eq(result.status, 200)
+}
+```
+
+### Attributes
+```xray
+@test                                 // mark as a test
+fn test_basic() { return }
+
+@test(skip)                           // skip this test
+fn test_wip() { return }
+
+@native                               // C implementation
+class Array<T> {
+    length: int
+    push(v: T)
+    // no method bodies — provided by src/runtime/object/xarray_methods.c
+}
+
+@deprecated("use newAPI() instead")
+fn oldAPI() { return }
+```
+
+### Run tests
+Run with `xray test <file_or_dir>`.

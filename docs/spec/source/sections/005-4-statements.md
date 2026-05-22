@@ -38,7 +38,7 @@ ElseIfChain ::= ('else' 'if' '(' Expression ')' Block)+
 ElseClause  ::= 'else' Block
 ```
 
-```xray
+```xray @id=stmt-if
 if (x > 0) {
     print("positive")
 } else if (x == 0) {
@@ -60,7 +60,7 @@ if (x > 0) {
 WhileStmt ::= 'while' '(' Expression ')' Block
 ```
 
-```xray
+```xray @id=stmt-while
 let i = 0
 while (i < 10) {
     print(i)
@@ -80,11 +80,13 @@ ForInit ::= VarDecl | ExprStmt
 ForStep ::= Expression (',' Expression)*
 ```
 
-```xray
+```xray @id=stmt-for-c
 for (let i = 0; i < 10; i++) {
     print(i)
 }
-for (let i = 0, j = 100; i < j; i++, j--) { ... }
+for (let j = 100; j > 90; j--) {
+    print(j)
+}
 ```
 
 - `ForInit` 中声明的变量作用域限于循环体。
@@ -96,7 +98,7 @@ for (let i = 0, j = 100; i < j; i++, j--) { ... }
 ForInStmt ::= 'for' '(' Identifier 'in' Expression ')' Block
 ```
 
-```xray
+```xray @id=stmt-for-in
 for (item in [1, 2, 3]) { print(item) }
 for (i in 0..n) { print(i) }                  // 范围迭代（半开区间）
 for (ch in "hello") { print(ch) }             // 字符串字符（按 codepoint）
@@ -115,7 +117,7 @@ ForInPairStmt ::= 'for' '(' Identifier ',' Identifier 'in' Expression ')' Block
               |  'for' '(' '(' Identifier ',' Identifier ')' 'in' Expression ')' Block
 ```
 
-```xray
+```xray @id=stmt-for-pairs
 // 形式 A：直接两标识符（更常见）
 for (k, v in someMap) { print("${k}=${v}") }     // Map → (key, value)
 for (i, e in someArray) { print("${i}: ${e}") }  // Array → (index, element)
@@ -154,7 +156,9 @@ MatchArm  ::= Pattern ('if' '(' Expression ')')? '->' (Expression | Block)
 - 分支之间的逗号**可选**——同一个 match 中可以混用（不写更常见）。
 - 守卫条件 `if` 后的表达式必须用括号：`n if (n > 0)`。
 
-```xray
+```xray @id=stmt-match
+match (x) { 1 -> print("one"), _ -> print("other") }
+
 match (action) {
     "start" -> {
         log.info("starting")
@@ -171,7 +175,7 @@ match (action) {
 
 ### 4.6 `break` / `continue`
 
-```xray
+```xray @id=stmt-break-continue
 break                  // 跳出最内层循环
 continue               // 进入下一次循环
 ```
@@ -188,7 +192,7 @@ ReturnStmt ::= 'return' ReturnValue? (';' | LineBreak)
 ReturnValue ::= Expression | '(' Expression (',' Expression)+ ')'
 ```
 
-```xray
+```xray @id=stmt-return
 return                 // 隐式返回 ()（Unit）
 return 42
 return (a, b)          // 多返回值，必须用括号包裹元组
@@ -210,7 +214,9 @@ CatchClause   ::= 'catch' '(' Identifier (':' Type)? ')' Block
 FinallyClause ::= 'finally' Block
 ```
 
-```xray
+```xray @id=stmt-try
+try { throw new Exception("inline") } catch (e) { print(e.message) }
+
 try {
     risky()
 } catch (e) {
@@ -237,7 +243,7 @@ throw new HttpError(500, "internal")        // ✅ 自定义 Exception 子类
 DeferStmt ::= 'defer' (Expression | Block)
 ```
 
-```xray
+```xray @id=stmt-defer
 fn read_file(path: string) -> string {
     let f = open(path)
     defer f.close()                  // 函数返回前必执行
@@ -264,7 +270,7 @@ fn process() {
 
 `print` / `dump` 是**内置全局函数**（非关键字，详见 §13.1），列于此处便于查阅：
 
-```xray
+```xray @id=stmt-print-dump
 print("hello")                 // 自动追加换行
 print("a:", a, "b:", b)        // 多参用空格分隔
 dump(some_obj)                 // 调试输出，含类型信息与结构布局
@@ -313,7 +319,7 @@ ElseIfChain ::= ('else' 'if' '(' Expression ')' Block)+
 ElseClause  ::= 'else' Block
 ```
 
-```xray
+```xray @id=stmt-if
 if (x > 0) {
     print("positive")
 } else if (x == 0) {
@@ -335,7 +341,7 @@ if (x > 0) {
 WhileStmt ::= 'while' '(' Expression ')' Block
 ```
 
-```xray
+```xray @id=stmt-while
 let i = 0
 while (i < 10) {
     print(i)
@@ -355,11 +361,13 @@ ForInit ::= VarDecl | ExprStmt
 ForStep ::= Expression (',' Expression)*
 ```
 
-```xray
+```xray @id=stmt-for-c
 for (let i = 0; i < 10; i++) {
     print(i)
 }
-for (let i = 0, j = 100; i < j; i++, j--) { ... }
+for (let j = 100; j > 90; j--) {
+    print(j)
+}
 ```
 
 - Variables declared in `ForInit` are scoped to the loop body.
@@ -371,7 +379,7 @@ for (let i = 0, j = 100; i < j; i++, j--) { ... }
 ForInStmt ::= 'for' '(' Identifier 'in' Expression ')' Block
 ```
 
-```xray
+```xray @id=stmt-for-in
 for (item in [1, 2, 3]) { print(item) }
 for (i in 0..n) { print(i) }                  // range iteration (half-open)
 for (ch in "hello") { print(ch) }             // string characters (by codepoint)
@@ -390,7 +398,7 @@ ForInPairStmt ::= 'for' '(' Identifier ',' Identifier 'in' Expression ')' Block
               |  'for' '(' '(' Identifier ',' Identifier ')' 'in' Expression ')' Block
 ```
 
-```xray
+```xray @id=stmt-for-pairs
 // Form A: two bare identifiers (more common)
 for (k, v in someMap) { print("${k}=${v}") }     // Map → (key, value)
 for (i, e in someArray) { print("${i}: ${e}") }  // Array → (index, element)
@@ -429,7 +437,9 @@ MatchArm  ::= Pattern ('if' '(' Expression ')')? '->' (Expression | Block)
 - Commas between arms are **optional** — both styles can be mixed in the same `match` (omitting commas is more common).
 - Guard expressions following `if` must be parenthesized: `n if (n > 0)`.
 
-```xray
+```xray @id=stmt-match
+match (x) { 1 -> print("one"), _ -> print("other") }
+
 match (action) {
     "start" -> {
         log.info("starting")
@@ -446,7 +456,7 @@ For pattern details see [§6](#6-patterns).
 
 ### 4.6 `break` / `continue`
 
-```xray
+```xray @id=stmt-break-continue
 break                  // exit the innermost loop
 continue               // proceed to the next iteration
 ```
@@ -463,7 +473,7 @@ ReturnStmt ::= 'return' ReturnValue? (';' | LineBreak)
 ReturnValue ::= Expression | '(' Expression (',' Expression)+ ')'
 ```
 
-```xray
+```xray @id=stmt-return
 return                 // implicitly returns () (Unit)
 return 42
 return (a, b)          // multi-value return must wrap a tuple in parens
@@ -485,7 +495,9 @@ CatchClause   ::= 'catch' '(' Identifier (':' Type)? ')' Block
 FinallyClause ::= 'finally' Block
 ```
 
-```xray
+```xray @id=stmt-try
+try { throw new Exception("inline") } catch (e) { print(e.message) }
+
 try {
     risky()
 } catch (e) {
@@ -512,7 +524,7 @@ throw new HttpError(500, "internal")        // ✅ user Exception subclass
 DeferStmt ::= 'defer' (Expression | Block)
 ```
 
-```xray
+```xray @id=stmt-defer
 fn read_file(path: string) -> string {
     let f = open(path)
     defer f.close()                  // always runs before the function returns
@@ -539,7 +551,7 @@ fn process() {
 
 `print` / `dump` are **built-in global functions** (not keywords; see §13.1), listed here for convenience:
 
-```xray
+```xray @id=stmt-print-dump
 print("hello")                 // auto-appends a newline
 print("a:", a, "b:", b)        // multiple arguments separated by spaces
 dump(some_obj)                 // debug output, with type info and structure
